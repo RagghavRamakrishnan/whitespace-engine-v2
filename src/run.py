@@ -117,8 +117,16 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
     status: dict[str, str] = {a.signal_id(): ("read" if not use_llm else "pending")
                               for a in readable}
     if use_llm and readable:
-        found, status, notes, call_budget = extract.read_articles(
-            readable, cfg, call_llm, call_budget)
+        try:
+            found, status, notes, call_budget = extract.read_articles(
+                readable, cfg, call_llm, call_budget)
+        except Exception as exc:                                # noqa: BLE001
+            # Whatever went wrong, the run carries on: unread articles stay queued
+            # for the next run, and anything already found still gets emailed.
+            log.error("article reading stopped early: %s — remaining articles "
+                      "will be read next run", exc)
+            found, status = {}, {a.signal_id(): "quota" for a in readable}
+            notes = {"rechecked": 0, "recovered": 0, "short_lists": 0}
         stats["rechecked"] += notes["rechecked"]
         stats["recovered_on_recheck"] += notes["recovered"]
         stats["short_lists"] += notes["short_lists"]

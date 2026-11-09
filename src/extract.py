@@ -135,14 +135,25 @@ def _format_batch(batch: Sequence[RawSignal]) -> str:
     return "\n".join(parts)
 
 
-def _parse(raw: str) -> dict[str, Any]:
+def _parse(raw: str) -> Any:
+    """Read the model's JSON answer, which may be an object {...} or a list [...],
+    possibly wrapped in a code fence or a sentence of commentary."""
     raw = (raw or "").strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1].removeprefix("json").strip()
-    start, end = raw.find("{"), raw.rfind("}")
-    if start >= 0 and end > start:
-        raw = raw[start:end + 1]
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    # Cut out the JSON, using whichever bracket opens first.
+    starts = [i for i in (raw.find("{"), raw.find("[")) if i >= 0]
+    if not starts:
+        raise ValueError("no JSON in model answer")
+    start = min(starts)
+    end = raw.rfind("}" if raw[start] == "{" else "]")
+    if end <= start:
+        raise ValueError("incomplete JSON in model answer")
+    return json.loads(raw[start:end + 1])
 
 
 class QuotaExhausted(RuntimeError):
@@ -161,6 +172,46 @@ _QUOTA_MARKERS = ("quota", "rate limit", "resource_exhausted", "429",
 def _is_quota_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(m in msg for m in _QUOTA_MARKERS)
+
+
+def _entries_from_answer(data: Any, n_articles: int) -> list[dict[str, Any]] | None:
+    """Turn the model's answer into per-article entries, whatever shape it chose.
+
+    Asked for {"articles": [{"article_index": 0, "companies": [...]}]}, models
+    sometimes return the bare list, or (for one article) just the companies. All
+    of those are understood. Anything unrecognisable returns None, which the caller
+    treats as "not read" so the article is retried — never as "no companies".
+    """
+    if isinstance(data, dict):
+        if isinstance(data.get("articles"), list):
+            return data["articles"]
+        if n_articles == 1 and isinstance(data.get("companies"), list):
+            return [{"article_index": 0, "companies": data["companies"]}]
+        if n_articles == 1 and data.get("company_name"):
+            return [{"article_index": 0, "companies": [data]}]
+        return None
+    if isinstance(data, list):
+        if not data:
+            return []
+        if all(isinstance(e, dict) and "article_index" in e for e in data):
+            return data
+        if n_articles == 1 and all(isinstance(e, dict) for e in data):
+            return [{"article_index": 0, "companies": data}]
+    return None
+
+
+def _results_from_entries(entries: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
+    out: list[list[dict[str, Any]]] = [[] for _ in range(n)]
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        i = e.get("article_index")
+        if isinstance(i, str) and i.isdigit():
+            i = int(i)
+        if isinstance(i, int) and 0 <= i < n:
+            comps = e.get("companies") or []
+            out[i] = [c for c in comps if isinstance(c, dict) and c.get("company_name")]
+    return out
 
 
 def extract_batch(batch: Sequence[RawSignal], cfg: dict[str, Any],
@@ -183,15 +234,12 @@ def extract_batch(batch: Sequence[RawSignal], cfg: dict[str, Any],
             raise QuotaExhausted(str(exc)) from exc
         log.error("article extraction failed for batch of %d: %s", len(batch), exc)
         return results, False
-    entries = data.get("articles", [])
-    if not isinstance(entries, list):
+    entries = _entries_from_answer(data, len(batch))
+    if entries is None:
+        log.warning("unrecognised answer format for batch of %d — will retry next run",
+                    len(batch))
         return results, False
-    for entry in entries:
-        idx = entry.get("article_index")
-        if isinstance(idx, int) and 0 <= idx < len(batch):
-            companies = entry.get("companies") or []
-            results[idx] = [c for c in companies if (c or {}).get("company_name")]
-    return results, True
+    return _results_from_entries(entries, len(batch)), True
 
 
 # ------------------------------------------------------------------ full reading
@@ -208,6 +256,7 @@ def extract_batch(batch: Sequence[RawSignal], cfg: dict[str, Any],
 
 SHORT_ARTICLE = 6000           # chars; at or below this, articles share a request
 SHORT_GROUP_CHARS = 20000      # total text per shared request
+MAX_GROUP_ARTICLES = 4         # at most this many articles share one request
 SECTION_CHARS = 9000           # longest single section sent to the model
 SECTION_OVERLAP = 800
 
@@ -291,7 +340,7 @@ def plan_requests(articles: Sequence[RawSignal]) -> list[list[RawSignal]]:
                 group, size = [], 0
             plan.append([a])
             continue
-        if group and size + n > SHORT_GROUP_CHARS:
+        if group and (size + n > SHORT_GROUP_CHARS or len(group) >= MAX_GROUP_ARTICLES):
             plan.append(group)
             group, size = [], 0
         group.append(a)
@@ -328,13 +377,10 @@ def read_articles(articles: Sequence[RawSignal], cfg: dict[str, Any], call_llm,
                 if _is_quota_error(exc):
                     raise QuotaExhausted(str(exc)) from exc
                 return [[] for _ in batch], False
-            out = [[] for _ in batch]
-            for e in data.get("articles", []) if isinstance(data, dict) else []:
-                i = e.get("article_index")
-                if isinstance(i, int) and 0 <= i < len(batch):
-                    out[i] = [c for c in (e.get("companies") or [])
-                              if (c or {}).get("company_name")]
-            return out, True
+            entries = _entries_from_answer(data, len(batch))
+            if entries is None:
+                return [[] for _ in batch], False
+            return _results_from_entries(entries, len(batch)), True
         return extract_batch(batch, cfg, call_llm)
 
     try:

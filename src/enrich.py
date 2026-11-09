@@ -122,7 +122,24 @@ def call_llm(system: str, user: str, cfg: dict[str, Any]) -> str:
         if wait > 0:
             time.sleep(wait)
     _last_call_at = time.monotonic()
-    return PROVIDERS[cfg["llm"]["provider"]](system, user, cfg)
+    # "Model is experiencing high demand" (503) and similar server hiccups are
+    # temporary. Wait and try again rather than writing the articles off. Daily-limit
+    # errors are NOT retried here; they are handled by deferring to the next run.
+    waits = [10, 30, 60]
+    for attempt in range(len(waits) + 1):
+        try:
+            return PROVIDERS[cfg["llm"]["provider"]](system, user, cfg)
+        except Exception as exc:                                # noqa: BLE001
+            msg = str(exc).lower()
+            transient = any(m in msg for m in ("503", "unavailable", "high demand",
+                                                "overloaded", "500 internal", "deadline",
+                                                "timed out", "timeout", "502", "504"))
+            if not transient or attempt == len(waits):
+                raise
+            log.warning("AI temporarily unavailable (%s) — retrying in %ss",
+                        str(exc)[:80], waits[attempt])
+            time.sleep(waits[attempt])
+            _last_call_at = time.monotonic()
 
 
 def _parse(raw: str) -> dict[str, Any]:
