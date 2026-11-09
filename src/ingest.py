@@ -315,6 +315,7 @@ def _decode_google_news(url: str) -> str:
         return real if isinstance(real, str) and real.startswith("http") else ""
     except Exception as exc:                                    # noqa: BLE001
         log.info("google news link not decoded (%s) — browser will open it", exc)
+        FETCH_STATS["gn_error"] = str(exc)[:120]
         return ""
 
 
@@ -324,8 +325,10 @@ def _enrich_from_article(sig: RawSignal) -> RawSignal:
     try:
         target = sig.url
         if "news.google." in (sig.url or ""):
+            FETCH_STATS["gn_tried"] += 1
             real = _decode_google_news(sig.url)
             if real:
+                FETCH_STATS["gn_decoded"] += 1
                 # sig.url stays the Google link: it is this article's identity in the
                 # memory, so it is still recognised as "already read" next run.
                 sig.raw["publisher_url"] = real
@@ -384,7 +387,8 @@ def _enrich_many(sigs: list[RawSignal], workers: int = 3) -> list[RawSignal]:
 
 
 # Counters for the email footer; reset at the start of each run by collect().
-FETCH_STATS = {"browser_opened": 0, "expanded": 0, "paywalled": 0}
+FETCH_STATS = {"browser_opened": 0, "expanded": 0, "paywalled": 0,
+               "gn_tried": 0, "gn_decoded": 0, "gn_error": ""}
 SOURCE_ERRORS: dict[str, str] = {}      # source id -> why it failed this run
 _BROWSER = {"enabled": True, "max_pages": 15, "used": 0, "deadline": None}
 
@@ -586,7 +590,7 @@ def collect(cfg: dict[str, Any], store: Any = None) -> list[RawSignal]:
     global _already_read
     _already_read = store.is_signal_seen if store is not None else None
     for k in FETCH_STATS:
-        FETCH_STATS[k] = 0
+        FETCH_STATS[k] = "" if k == "gn_error" else 0
     SOURCE_ERRORS.clear()
     _BROWSER["enabled"] = bool(cfg.get("run", {}).get("browser_expand", True))
     _BROWSER["max_pages"] = int(cfg.get("run", {}).get("browser_max_pages", 15))

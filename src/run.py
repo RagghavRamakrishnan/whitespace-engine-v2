@@ -143,6 +143,9 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     stats["browser_opened"] = ingest.FETCH_STATS["browser_opened"]
     stats["expanded"] = ingest.FETCH_STATS["expanded"]
     stats["paywalled"] = ingest.FETCH_STATS["paywalled"]
+    stats["gn_tried"] = ingest.FETCH_STATS["gn_tried"]
+    stats["gn_decoded"] = ingest.FETCH_STATS["gn_decoded"]
+    report.gn_error = ingest.FETCH_STATS["gn_error"]
 
     # A source silently returning nothing is the most likely way this degrades.
     dead = store.unhealthy_sources(int(cfg["run"].get("dead_source_runs", 20)))

@@ -128,6 +128,7 @@ class RunReport:
         self.logs = LogCollector()
         self.time_up_reading = False
         self.gave_up: list[str] = []
+        self.gn_error = ""
         self.carried_over: list[str] = []
 
     def reject(self, company: str, stage: str, reason: str) -> None:
@@ -189,6 +190,22 @@ def _checks(rep: RunReport, stats: dict[str, Any],
                     f"could be missed. They are retried automatically next run.{ex}"))
     elif read:
         out.append((OK, f"All {read} funding-related articles downloaded in full", ""))
+
+    # 2b. Google News links turned into the real article link?
+    tried, ok = stats.get("gn_tried", 0), stats.get("gn_decoded", 0)
+    if tried:
+        if ok == tried:
+            out.append((OK, f"Google News links: all {tried} opened as the real article", ""))
+        elif ok == 0:
+            out.append((PROBLEM, f"Google News links: 0 of {tried} could be opened directly",
+                        "The link-conversion step is not working, so these articles fall back "
+                        "to the slower browser (15 a run) and many are read from the headline "
+                        "only. Send me the log."
+                        + (f" Technical detail: {rep.gn_error}" if rep.gn_error else "")))
+        else:
+            out.append((WATCH if ok / tried < 0.8 else OK,
+                        f"Google News links: {ok} of {tried} opened as the real article",
+                        "The rest fell back to the browser. A few failures are normal."))
 
     # 3. Did the AI read everything it was meant to?
     waiting = stats.get("quota_blocked", 0)
