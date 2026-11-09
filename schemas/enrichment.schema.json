@@ -78,9 +78,17 @@
         "DeepTech",
         "Enterprise B2B SaaS",
         "AI/ML",
+        "Fintech",
         "MedTech/BioTech/HealthTech",
         "ClimateTech/Advanced Materials",
         "D2C/Consumer Tech",
+        "Logistics/Mobility",
+        "Real Estate/PropTech",
+        "Media/Gaming/Entertainment",
+        "Food & Beverage",
+        "EdTech",
+        "Manufacturing/Industrial",
+        "Other",
         "Unclassified"
       ]
     },
