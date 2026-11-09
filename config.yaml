@@ -12,6 +12,9 @@ run:
   # When a downloaded article still looks cut short, open it in a real browser, click
   # every "read more" / "show more" / "continue reading", scroll, and read it again.
   # Never clicks subscribe/login/payment controls — paywalls are reported, not bypassed.
+  # Ignore articles published more than this many days ago. Also applied to the
+  # Google News searches, which otherwise return months-old stories.
+  max_article_age_days: 3
   browser_expand: true
   browser_max_pages: 30            # per run; only NEW articles that look cut short
   # Articles per extraction call. Bigger batches = fewer calls = less waiting and
@@ -37,7 +40,7 @@ sources:
   # -- Tech media (RSS, cheapest and most reliable stream)
   - id: entrackr
     type: rss
-    url: https://entrackr.com/feed/
+    url: https://entrackr.com/rss
     interval_minutes: 15
   - id: inc42
     type: rss
@@ -51,6 +54,8 @@ sources:
     type: rss
     url: https://www.vccircle.com/rss/news
     interval_minutes: 15
+    enabled: false                  # feed closed/blocked — covered by a Google News site: query below
+
   - id: livemint_tech
     type: rss
     url: https://www.livemint.com/rss/technology
@@ -71,12 +76,18 @@ sources:
       - 'India startup "seed round" funding Bengaluru OR Mumbai OR Pune OR Hyderabad'
       - 'India startup "emerges from stealth" OR "comes out of stealth"'
       - 'India startup funding "led by" (Blume OR Accel OR "Peak XV" OR Elevation OR Antler OR "Prime Venture")'
+      # Publishers whose own feeds are closed or block servers, reached through Google News
+      - 'site:vccircle.com (raises OR funding OR "early-stage" OR cheques)'
+      - 'site:moneycontrol.com startup (raises OR funding OR "seed round")'
+      - 'site:economictimes.indiatimes.com startup (raises OR funding)'
 
   # -- More free India tech RSS. Costs nothing to add; dedup handles the overlap.
   - id: moneycontrol_startup
     type: rss
     url: https://www.moneycontrol.com/rss/startups.xml
     interval_minutes: 15
+    enabled: false                  # feed closed/blocked — covered by a Google News site: query below
+
   - id: ettech
     type: rss
     url: https://economictimes.indiatimes.com/tech/rssfeeds/13357270.cms
@@ -231,9 +242,9 @@ verification:
   # A counted figure always beats a self-reported band. Real traffic is ~300-600
   # lookups/month, so every tier stays comfortably inside its free allowance.
   chain:
-    - name: google_cse
+    # Google's Custom Search API (LinkedIn size band) is closed to new users since
+    # Jan 2026 and shuts down for everyone on 1 Jan 2027 — removed.
     - name: diffbot
-      when: miss_or_borderline
     - name: pdl
       when: miss_only
       monthly_cap: 90
