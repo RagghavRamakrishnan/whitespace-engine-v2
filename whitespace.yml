@@ -1,0 +1,92 @@
+name: Whitespace Alert Engine
+
+on:
+  schedule:
+    # Every 15 minutes. Free and unlimited on a PUBLIC repo.
+    # GitHub's scheduler is best-effort: runs can start a few minutes late at busy
+    # times. Irrelevant for a race measured in hours.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:        # "Run workflow" button for manual tests
+
+permissions:
+  contents: write           # only used for the once-a-day keep-alive commit
+
+concurrency:
+  group: whitespace-engine  # never let two runs overlap and double-send
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Headless browser used to click "read more" on articles that hide text.
+      # The browser download is cached between runs so it is only fetched once.
+      - name: Cache browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install browser
+        run: python -m playwright install --with-deps chromium
+
+      # Memory (what has been read and alerted) lives in GitHub's private Actions
+      # cache — NOT committed to the repo. In a public repo a committed database
+      # would publish every company you have been alerted on.
+      - name: Restore memory
+        uses: actions/cache/restore@v4
+        with:
+          path: whitespace.db
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Run the scan
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_CSE_KEY: ${{ secrets.GOOGLE_CSE_KEY }}
+          GOOGLE_CSE_CX: ${{ secrets.GOOGLE_CSE_CX }}
+          DIFFBOT_TOKEN: ${{ secrets.DIFFBOT_TOKEN }}
+          PDL_API_KEY: ${{ secrets.PDL_API_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: python -m src.run --once
+
+      # Saved even if the scan step failed, so a crash never makes the engine
+      # forget what it already alerted on and re-send it.
+      - name: Save memory
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: whitespace.db
+          key: state-${{ github.run_id }}
+
+      # GitHub switches off schedules on public repos after 60 days with no commits.
+      # One tiny timestamp commit a day prevents that. It contains no data.
+      - name: Keep-alive
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          if [ "$(cat .keepalive 2>/dev/null)" != "$today" ]; then
+            echo "$today" > .keepalive
+            git config user.name  "whitespace-engine"
+            git config user.email "whitespace-engine@users.noreply.github.com"
+            git add .keepalive
+            git commit -m "keep-alive $today"
+            git push
+          fi
