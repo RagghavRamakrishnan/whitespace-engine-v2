@@ -49,8 +49,24 @@ MONEY_HINT = re.compile(
     r"|\bacceler(?:ator|ates)\b|\bcohort\b|\bbatch\b|\bdemo day\b", re.I)
 
 
+# Company results, IPO and stock stories mention money constantly but are never a new
+# funding round. Skipped ONLY when the headline also has no funding verb, so
+# "X posts Q2 profit, raises Rs 20 Cr" is still read.
+NOT_A_RAISE_HEADLINE = re.compile(
+    r"\bQ[1-4]\b|\bFY\s?\d{2}\b|\brevenue\b|\bprofit\b|\bloss(?:es)?\b|\bEBITDA\b|"
+    r"\bIPO\b|\bshares?\b|\bstock\b|\blisting\b|\bappoints?\b|\belevates?\b|"
+    r"\blaunch(?:es|ed)?\b|\bacquires?\b|\blayoffs?\b|\bjob cuts\b", re.I)
+FUNDING_HEADLINE = re.compile(
+    r"rais(?:e|es|ed|ing)|secur(?:e|es|ed)|\bbag(?:s|ged)?\b|\bnet(?:s|ted)\b|"
+    r"\bland(?:s|ed)\b|funding|\bround\b|\bseed\b|series\s+[a-f]|stealth|"
+    r"\binvest|\bbacked\b|\bbacks\b|\bgrant\b|\bcheque|\bmops?\b|\bpicks? up\b", re.I)
+
+
 def worth_reading(sig: RawSignal) -> bool:
-    blob = f"{sig.title} {sig.body[:3000]}"
+    title = sig.title or ""
+    if NOT_A_RAISE_HEADLINE.search(title) and not FUNDING_HEADLINE.search(title):
+        return False
+    blob = f"{title} {(sig.body or '')[:3000]}"
     return bool(MONEY_HINT.search(blob))
 
 
@@ -190,8 +206,8 @@ def extract_batch(batch: Sequence[RawSignal], cfg: dict[str, Any],
 #     deals this week") and fewer were found, it is read again, given the list
 #     already found and told to find the rest.
 
-SHORT_ARTICLE = 4000           # chars; at or below this, articles share a request
-SHORT_GROUP_CHARS = 12000      # total text per shared request
+SHORT_ARTICLE = 6000           # chars; at or below this, articles share a request
+SHORT_GROUP_CHARS = 20000      # total text per shared request
 SECTION_CHARS = 9000           # longest single section sent to the model
 SECTION_OVERLAP = 800
 
@@ -257,14 +273,22 @@ def plan_requests(articles: Sequence[RawSignal]) -> list[list[RawSignal]]:
     Long articles and anything stating a deal count (roundups) are read FIRST, so if
     a run's request budget runs out it is never the roundup that waits.
     """
-    articles = sorted(articles, key=lambda a: (stated_deal_count(a) == 0,
-                                               -len(a.body or "")))
+    # Individual funding stories first, newest first: they are the early signal.
+    # Roundups go LAST — every company in them was usually reported individually
+    # days earlier, so a roundup is a backstop, not the main source.
+    articles = sorted(articles, key=lambda a: (stated_deal_count(a) > 0,
+                                               -a.published_at.timestamp()))
     plan: list[list[RawSignal]] = []
     group: list[RawSignal] = []
     size = 0
     for a in articles:
         n = len(a.body or "")
         if n > SHORT_ARTICLE:
+            # Send any short articles already queued FIRST, so the reading order
+            # above is kept — a long roundup must never jump ahead of them.
+            if group:
+                plan.append(group)
+                group, size = [], 0
             plan.append([a])
             continue
         if group and size + n > SHORT_GROUP_CHARS:
@@ -334,7 +358,11 @@ def read_articles(articles: Sequence[RawSignal], cfg: dict[str, Any], call_llm,
                 comps = _union(comps, res[0])
 
             stated = stated_deal_count(art)
-            if ok_all and stated >= 3 and len(comps) < stated:
+            # A roundup that says "...and others" does not name every company, so a
+            # second read cannot find more; skip it rather than waste requests.
+            names_all = not re.search(r"\band others\b|\bamong others\b",
+                                      art.body or "", re.I)
+            if ok_all and names_all and stated >= 3 and len(comps) < stated:
                 notes["rechecked"] += 1
                 already = ", ".join(c["company_name"] for c in comps) or "none"
                 before = len(comps)

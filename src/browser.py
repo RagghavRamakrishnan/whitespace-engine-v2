@@ -130,6 +130,19 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
         for url in list(urls)[:max_pages]:
             try:
                 page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                # Google News links forward to the publisher with JavaScript a moment
+                # after loading. Wait for that hop before touching the page, or the
+                # page is torn down mid-read.
+                if "news.google." in page.url:
+                    try:
+                        page.wait_for_url(lambda u: "news.google." not in u,
+                                          timeout=timeout_ms)
+                    except Exception:                       # noqa: BLE001
+                        pass
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                except Exception:                           # noqa: BLE001
+                    pass
                 page.wait_for_timeout(1500)
                 clicked = 0
                 for _ in range(3):                          # some articles expand in stages

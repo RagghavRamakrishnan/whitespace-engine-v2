@@ -161,12 +161,8 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                 log.info("AI veto: %s — %s", sig.company_name, reason)
                 return None, f"ai_veto: {reason}"
 
-            # Independent headcount sanity check against the model's own estimate.
-            est = data.get("estimated_headcount")
-            hc_max = cfg["gates"]["headcount"]["max"]
-            if isinstance(est, int) and est > hc_max:
-                log.info("AI headcount veto: %s ~%s staff", sig.company_name, est)
-                return None, f"ai_veto: estimated {est} employees, above {hc_max}"
+            # The model's own headcount figure is a GUESS and is never used to drop an
+            # account — that is reserved for counted figures. It only informs the email.
             if data.get("is_india_based") is False:
                 return None, "ai_veto: not India-based"
 

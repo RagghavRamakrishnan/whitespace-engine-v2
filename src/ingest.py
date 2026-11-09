@@ -276,7 +276,7 @@ def _enrich_from_article(sig: RawSignal) -> RawSignal:
 _already_read = None
 
 
-def _enrich_many(sigs: list[RawSignal], workers: int = 8) -> list[RawSignal]:
+def _enrich_many(sigs: list[RawSignal], workers: int = 3) -> list[RawSignal]:
     """Fetch article bodies in parallel.
 
     Sequential fetching dominated run time (~1s x 40 articles), and GitHub Actions

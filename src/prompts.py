@@ -24,17 +24,16 @@ on its own — a Delaware, Singapore or UK holding company with its engineering 
 operations team in Bengaluru, NCR, Mumbai, Hyderabad, Chennai or Pune is exactly the \
 target. What does NOT count: a passing mention of India, an India launch, Indian \
 customers, an Indian investor, or an India sales office attached to a foreign team.
-- The company clearly has far more than 50 employees. Use what you know about it. Large, \
-well-known global companies (for example Anthropic, OpenAI, Stripe, Uber) are always \
-disqualified regardless of what the article says.
-- OPERATIONS-HEAVY BUSINESSES: headcount does not track funding in these models. A \
-quick-commerce, food-delivery, logistics, warehousing, retail-chain, field-services, \
-clinic-network or manufacturing business carries a large salaried corporate, ops and \
-category team long before it looks big by funding. Estimate these from their \
-OPERATIONS footprint — cities served, dark stores, outlets, warehouses — not from the \
-round size, and disqualify when that estimate exceeds 50.
+- The company is KNOWN to be large: a well-known established company you are confident \
+has far more than 50 employees (for example Anthropic, OpenAI, Stripe, Uber, Zepto, \
+Swiggy), or the article itself states a team size above 50. Do NOT disqualify on a \
+guess about size or business model — an operations-heavy business model (clinics, \
+restaurants, delivery, robots, manufacturing) is NOT a reason to disqualify. Size \
+uncertainty is resolved later by a human check, not by you.
 - There is no genuine NEW funding event — a rumour, a fund announcing its own pool, an \
-"in talks to raise", a past round being recapped, or an acquisition.
+"in talks to raise", or an acquisition. A company named in a weekly or monthly \
+funding ROUNDUP as having raised money this week DOES have a genuine funding event, \
+even if the roundup gives only one line about it.
 - The named entity is really a headline fragment or a publisher's own name.
 
 Disqualify ONLY when one of the reasons above is clearly true. A short or \
