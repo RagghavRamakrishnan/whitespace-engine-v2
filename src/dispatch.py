@@ -20,6 +20,10 @@ from typing import Any, Sequence
 
 from .models import QualifiedAccount, SHEET_HEADERS
 
+from .report import overall as run_details_overall
+from .report import render_html as run_details_html
+from .report import render_text as run_details_text
+
 log = logging.getLogger(__name__)
 
 
@@ -256,7 +260,8 @@ def _recall_footer(stats: dict[str, int] | None,
 
 def send_digest(accounts: Sequence[QualifiedAccount], cfg: dict[str, Any],
                 dry_run: bool = False, stats: dict[str, int] | None = None,
-                dead_sources: Sequence[dict[str, Any]] | None = None) -> bool:
+                dead_sources: Sequence[dict[str, Any]] | None = None,
+                report: Any = None) -> bool:
     """One email for the whole run. No accounts means no email."""
     if not accounts:
         log.info("nothing qualified this run — no email sent")
@@ -271,8 +276,9 @@ def send_digest(accounts: Sequence[QualifiedAccount], cfg: dict[str, Any],
         print("TO:", to_addr)
         print("SUBJECT:", subject)
         print(render_digest_text(accounts))
-        if _recall_footer(stats, dead_sources):
-            print("---\n" + _recall_footer(stats, dead_sources))
+        footer = _footer_text(stats, dead_sources, report)
+        if footer:
+            print("---\n" + footer)
         return True
 
     user = os.getenv("SMTP_USER", "")
@@ -285,12 +291,10 @@ def send_digest(accounts: Sequence[QualifiedAccount], cfg: dict[str, Any],
     msg["Subject"] = subject
     msg["From"] = f"{e.get('from_name', 'Whitespace Engine')} <{user}>"
     msg["To"] = to_addr
-    footer = _recall_footer(stats, dead_sources)
+    footer = _footer_text(stats, dead_sources, report)
     msg.set_content(render_digest_text(accounts) + ("\n\n---\n" + footer if footer else ""))
     if e.get("format", "html") == "html":
-        html_footer = (f'<p style="color:#57606a;font-size:12px;border-top:1px solid '
-                       f'#d0d7de;padding-top:10px">{html.escape(footer)}</p>'
-                       if footer else "")
+        html_footer = _footer_html(stats, dead_sources, report, footer)
         msg.add_alternative(render_digest_html(accounts) + html_footer, subtype="html")
 
     try:
@@ -309,7 +313,8 @@ def send_digest(accounts: Sequence[QualifiedAccount], cfg: dict[str, Any],
 
 def send_heartbeat(cfg: dict[str, Any], stats: dict[str, int], quiet_hours: float,
                    dry_run: bool = False,
-                   dead_sources: Sequence[dict[str, Any]] | None = None) -> bool:
+                   dead_sources: Sequence[dict[str, Any]] | None = None,
+                   report: Any = None, problem: bool = False) -> bool:
     """'Still running, nothing qualified' email.
 
     Silence is ambiguous: no alerts could mean a quiet news day or a dead engine.
@@ -317,6 +322,9 @@ def send_heartbeat(cfg: dict[str, Any], stats: dict[str, int], quiet_hours: floa
     number of quiet hours and summarising what was actually looked at.
     """
     e = cfg["dispatch"]["email"]
+    if report is not None:
+        return _send_status_email(cfg, stats, quiet_hours, dry_run, dead_sources,
+                                  report, problem)
     subject = f"[Whitespace] All quiet — nothing qualified in the last {quiet_hours:.0f} hours"
     body = (
         f"No new accounts passed the filters in the last {quiet_hours:.0f} hours.\n"
@@ -365,6 +373,74 @@ def send_heartbeat(cfg: dict[str, Any], stats: dict[str, int], quiet_hours: floa
         return True
     except Exception as exc:                                    # noqa: BLE001
         log.error("heartbeat send failed: %s", exc)
+        return False
+
+
+def _footer_text(stats, dead_sources, report) -> str:
+    if report is not None:
+        return run_details_text(report, stats or {}, list(dead_sources or []))
+    return _recall_footer(stats, dead_sources)
+
+
+def _footer_html(stats, dead_sources, report, text_footer: str) -> str:
+    if report is not None:
+        return run_details_html(report, stats or {}, list(dead_sources or []))
+    return (f'<p style="color:#57606a;font-size:12px;border-top:1px solid '
+            f'#d0d7de;padding-top:10px">{html.escape(text_footer)}</p>'
+            if text_footer else "")
+
+
+def _send_status_email(cfg, stats, quiet_hours, dry_run, dead_sources, report,
+                       problem) -> bool:
+    """No-alert email: either the periodic 'still running' note or a fault warning.
+
+    Both carry the full Run Details, so the AE can tell a quiet news day from a
+    broken engine without reading a log.
+    """
+    e = cfg["dispatch"]["email"]
+    dead = list(dead_sources or [])
+    head = run_details_overall(report, stats, dead)[0]
+    if problem:
+        subject = "[Whitespace] Engine needs attention — " + head.split(" ", 1)[1]
+        intro = ("No new accounts this run, and something is not working as it should. "
+                 "Details below. If it is marked 🔴, send me the run log.")
+    else:
+        subject = (f"[Whitespace] All quiet — nothing qualified in the last "
+                   f"{quiet_hours:.0f} hours")
+        intro = (f"No new accounts passed the filters in the last {quiet_hours:.0f} hours. "
+                 "Below is what the latest run did, so you can see whether that is a quiet "
+                 "news day or a fault.")
+    text = intro + "\n\n" + run_details_text(report, stats, dead)
+    if dry_run:
+        print("=" * 72)
+        print("STATUS EMAIL:", subject)
+        print(text)
+        return True
+    user = os.getenv("SMTP_USER", "")
+    password = os.getenv("SMTP_PASSWORD", "")
+    if not user or not password:
+        log.error("SMTP credentials missing — cannot send status email")
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{e.get('from_name', 'Whitespace Engine')} <{user}>"
+    msg["To"] = os.getenv("ALERT_TO") or e.get("to", "")
+    msg.set_content(text)
+    msg.add_alternative(
+        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;max-width:760px">'
+        f"<p>{html.escape(intro)}</p>{run_details_html(report, stats, dead)}</div>",
+        subtype="html")
+    try:
+        with smtplib.SMTP(os.getenv("SMTP_HOST", e.get("smtp_host", "smtp.gmail.com")),
+                          int(os.getenv("SMTP_PORT", e.get("smtp_port", 587))),
+                          timeout=30) as srv:
+            srv.starttls()
+            srv.login(user, password)
+            srv.send_message(msg)
+        log.info("status email sent (%s)", "problem" if problem else "heartbeat")
+        return True
+    except Exception as exc:                                    # noqa: BLE001
+        log.error("status email send failed: %s", exc)
         return False
 
 

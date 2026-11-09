@@ -322,7 +322,8 @@ def _enrich_many(sigs: list[RawSignal], workers: int = 3) -> list[RawSignal]:
 
 # Counters for the email footer; reset at the start of each run by collect().
 FETCH_STATS = {"browser_opened": 0, "expanded": 0, "paywalled": 0}
-_BROWSER = {"enabled": True, "max_pages": 30}
+SOURCE_ERRORS: dict[str, str] = {}      # source id -> why it failed this run
+_BROWSER = {"enabled": True, "max_pages": 15, "used": 0, "deadline": None}
 
 
 def _expand_in_browser(sigs: list[RawSignal]) -> None:
@@ -333,9 +334,18 @@ def _expand_in_browser(sigs: list[RawSignal]) -> None:
     todo = [s for s in sigs if s.raw.get("needs_browser") and s.url]
     if not todo:
         return
+    # The page limit and time slice are shared by ALL sources in a run. (They used
+    # to apply per source, so one run could try 100+ pages and blow the time limit.)
+    import time as _time
+    left = _BROWSER["max_pages"] - _BROWSER["used"]
+    dl = _BROWSER["deadline"]
+    if left <= 0 or (dl is not None and _time.monotonic() > dl):
+        return
+    todo = todo[:left]
+    _BROWSER["used"] += len(todo)
     from . import browser
     got = browser.fetch_full_pages([s.url for s in todo], _article_text,
-                                   max_pages=_BROWSER["max_pages"])
+                                   max_pages=left, deadline=dl)
     for s in todo:
         r = got.get(s.url)
         if not r:
@@ -514,8 +524,13 @@ def collect(cfg: dict[str, Any], store: Any = None) -> list[RawSignal]:
     _already_read = store.is_signal_seen if store is not None else None
     for k in FETCH_STATS:
         FETCH_STATS[k] = 0
+    SOURCE_ERRORS.clear()
     _BROWSER["enabled"] = bool(cfg.get("run", {}).get("browser_expand", True))
-    _BROWSER["max_pages"] = int(cfg.get("run", {}).get("browser_max_pages", 30))
+    _BROWSER["max_pages"] = int(cfg.get("run", {}).get("browser_max_pages", 15))
+    _BROWSER["used"] = 0
+    import time as _time
+    _BROWSER["deadline"] = _time.monotonic() + 60 * float(
+        cfg.get("run", {}).get("browser_time_budget_minutes", 2.5))
     signals: list[RawSignal] = []
     for source in cfg.get("sources", []):
         if source.get("enabled") is False:
@@ -530,6 +545,7 @@ def collect(cfg: dict[str, Any], store: Any = None) -> list[RawSignal]:
             log.info("ingest %s -> %d signals", source["id"], len(got))
         except Exception as exc:                                # noqa: BLE001
             log.error("source %s failed: %s", source["id"], exc)
+            SOURCE_ERRORS[source["id"]] = str(exc)[:200]
         if store is not None:
             store.record_source(source["id"], len(got))
         signals.extend(got)

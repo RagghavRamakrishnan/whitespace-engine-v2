@@ -147,6 +147,15 @@ class Store:
             c.execute("""UPDATE seen_signals SET attempts = MAX(attempts - 1, 0)
                          WHERE signal_id = ?""", (signal_id,))
 
+    def requeue_signal(self, signal_id: str) -> None:
+        """Out of time before every company in this article was finished: read it
+        again next run. Already-sent companies are skipped then by the cool-off check,
+        so only the unfinished ones come through. Does not count as a failed attempt."""
+        with self.conn() as c:
+            c.execute("""UPDATE seen_signals SET processed = 0,
+                         attempts = MAX(attempts - 1, 0) WHERE signal_id = ?""",
+                      (signal_id,))
+
     def mark_signal_processed(self, signal_id: str) -> None:
         """Only called once the article has actually been read."""
         with self.conn() as c:

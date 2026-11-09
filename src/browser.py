@@ -102,7 +102,8 @@ _CLICK_SCRIPT = """
 
 
 def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
-                     max_pages: int = 30, timeout_ms: int = 20000) -> dict[str, dict]:
+                     max_pages: int = 30, timeout_ms: int = 12000,
+                     deadline: float | None = None) -> dict[str, dict]:
     """Open each URL in a headless browser, expand it, and return the article text.
 
     Returns {url: {"text": str, "clicked": int, "paywalled": bool}}. A page that fails
@@ -127,7 +128,14 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
         ctx.route("**/*", lambda r: r.abort()
                   if r.request.resource_type in ("image", "media", "font") else r.continue_())
         page = ctx.new_page()
+        import time as _time
+        short = min(timeout_ms, 6000)      # settle waits: never worth more than this
         for url in list(urls)[:max_pages]:
+            # Hard stop. Pages not opened keep the text already downloaded and are
+            # retried on the next run, so stopping here loses nothing.
+            if deadline is not None and _time.monotonic() > deadline:
+                log.info("browser time slice used up — remaining pages next run")
+                break
             try:
                 try:
                     page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
@@ -144,11 +152,11 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
                 if "news.google." in page.url:
                     try:
                         page.wait_for_url(lambda u: "news.google." not in u,
-                                          timeout=timeout_ms)
+                                          timeout=short)
                     except Exception:                       # noqa: BLE001
                         pass
                 try:
-                    page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                    page.wait_for_load_state("domcontentloaded", timeout=short)
                 except Exception:                           # noqa: BLE001
                     pass
                 page.wait_for_timeout(1500)
@@ -171,7 +179,10 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
                                           [EXPAND_TEXT.pattern, PAYWALL_CONTROL.pattern])
                     except Exception:                       # noqa: BLE001
                         # The page moved on (a late redirect). Let it settle; read it.
-                        page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                        try:
+                            page.wait_for_load_state("domcontentloaded", timeout=short)
+                        except Exception:                   # noqa: BLE001
+                            pass
                         n = 0
                     clicked += n
                     page.mouse.wheel(0, 20000)              # trigger lazy-loaded sections

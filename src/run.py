@@ -19,6 +19,7 @@ from .db import Store
 from .dispatch import append_row, send_digest, send_heartbeat
 from .enrich import call_llm, enrich
 from .gates import gate_headcount, run_hard_gates
+from .report import RunReport, has_problem
 from .models import (RawSignal, normalize_company_name, normalize_domain,
                      normalize_li_slug)
 
@@ -74,6 +75,15 @@ def _source_label(sig: RawSignal) -> str:
 
 
 def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
+    report = RunReport(cfg)
+    logging.getLogger().addHandler(report.logs)
+    try:
+        return _process(cfg, dry_run, report)
+    finally:
+        logging.getLogger().removeHandler(report.logs)
+
+
+def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str, int]:
     store = Store(cfg["storage"].get("sqlite_path", "./whitespace.db"),
                   cool_off_days=cfg["dispatch"].get("dedup_days", 180))
     stats = {"ingested": 0, "seen": 0, "articles_read": 0, "companies_found": 0,
@@ -83,10 +93,27 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
              "headcount": 0, "hc_verified": 0, "hc_unverified": 0, "ai_veto": 0,
              "review": 0, "enriched": 0, "alerted": 0}
 
+    # THE CLOCK. GitHub kills a run at 12 minutes, and a killed run sends nothing
+    # and saves nothing — so the next run repeats the same work and can die the same
+    # way. The engine therefore stops starting new work in time, carries the rest to
+    # the next run, and ALWAYS finishes by sending what it has.
+    import time as _time
+    t0 = _time.monotonic()
+    budget_s = 60 * float(cfg["run"].get("time_budget_minutes", 8.5))
+    read_until = t0 + budget_s * 0.6          # reading articles
+    enrich_until = t0 + budget_s - 45         # write-ups; leaves time to email
+    stats["time_deferred"] = 0
+
     pending: list[tuple[Any, int, int, bool]] = []
     alerted_this_run: set[str] = set()
     alerted_names_this_run: set[str] = set()
     articles = ingest.collect(cfg, store)
+    for s in cfg.get("sources", []):
+        if s.get("enabled") is not False:
+            report.by_source[s["id"]]["stories"] += 0
+    for a in articles:
+        report.by_source[a.source_id]["stories"] += 1
+    report.source_errors = dict(ingest.SOURCE_ERRORS)
 
     # Only recent news. A funding story older than this is not a whitespace race any
     # more — someone has already had weeks to claim the account.
@@ -124,6 +151,7 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         if store.is_signal_seen(art.signal_id()):
             stats["seen"] += 1
             continue
+        report.by_source[art.source_id]["new"] += 1
         # Record an ATTEMPT, not a completion. The article is only marked processed
         # once it has actually been read — a failed read comes back next run instead
         # of vanishing.
@@ -132,6 +160,8 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
 
     readable = [a for a in fresh if extract.worth_reading(a)]
     stats["articles_read"] = len(readable)
+    for a in readable:
+        report.by_source[a.source_id]["read"] += 1
     use_llm = cfg["run"].get("llm_extraction", True) and not dry_run_llm_off(cfg)
     # Cap requests per run so one busy day cannot burn the whole daily allowance in a
     # single run. Anything not read stays queued and is read on the next run.
@@ -140,10 +170,17 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
     found: dict[str, list[dict[str, Any]]] = {}
     status: dict[str, str] = {a.signal_id(): ("read" if not use_llm else "pending")
                               for a in readable}
+    def timed_llm(system: str, user: str, c: dict[str, Any]) -> str:
+        if _time.monotonic() > read_until:
+            report.time_up_reading = True
+            # Same path as running out of AI allowance: the rest wait for next run.
+            raise extract.QuotaExhausted("quota: time budget for reading used up")
+        return call_llm(system, user, c)
+
     if use_llm and readable:
         try:
             found, status, notes, call_budget = extract.read_articles(
-                readable, cfg, call_llm, call_budget)
+                readable, cfg, timed_llm, call_budget)
         except Exception as exc:                                # noqa: BLE001
             # Whatever went wrong, the run carries on: unread articles stay queued
             # for the next run, and anything already found still gets emailed.
@@ -173,11 +210,16 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         signals.append(art)
         signals.extend(merged)
         stats["companies_found"] += len(merged)
+        report.by_source[art.source_id]["companies"] += len(merged)
+        report.article_kind[art.url] = (
+            "roundup" if extract.stated_deal_count(art) > 0 or len(merged) >= 3
+            else "individual")
 
         if st != "read" or thin:
             # Not a complete read: leave unprocessed so the next run tries again.
             if thin:
                 stats["thin_body"] += 1
+                report.thin_titles.append(art.title[:90])
                 store.queue_review(
                     art.company_name or art.title[:60], art.url,
                     "article did not download — only the feed summary was available, "
@@ -187,11 +229,13 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         store.mark_signal_processed(sid)
         shortfall = (art.raw or {}).get("shortfall")
         if shortfall:
+            report.short_titles.append(art.title[:90])
             store.queue_review(art.title[:80], art.url,
                                f"article states {shortfall[0]} deals; "
                                f"{shortfall[1]} were found after two full reads")
         if not merged and _looks_like_a_deal(art):
             stats["possible_misses"] += 1
+            report.miss_titles.append(art.title[:90])
             store.queue_review(art.company_name or art.title[:60], art.url,
                                "article looked like a funding story but no company "
                                "was extracted — check for a missed deal")
@@ -214,6 +258,12 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         passed, reason, detail = run_hard_gates(sig, cfg)
         if not passed:
             stats["gated"] += 1
+            stage = reason.split(":")[0]
+            # Only real company candidates are listed — an article that is itself a
+            # roundup, or a headline with no company in it, is not a rejection.
+            if sig.company_name and stage != "company" and (
+                    sig.from_body or stage in ("india", "icp")):
+                report.reject(sig.company_name, stage, reason)
             store.log_drop(reason.split(":")[0], reason, sig.company_name, sig.url)
             continue
 
@@ -229,6 +279,8 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         state, _row = store.dedup_check(sig.domain_key, sig.slug_key, sig.name_key)
         if state == "cooloff":
             stats["dedup"] += 1
+            if sig.company_name and sig.company_name not in report.already_sent:
+                report.already_sent.append(sig.company_name)
             store.log_drop("dedup", "alerted within cool-off window",
                            sig.company_name, sig.url)
             continue
@@ -273,6 +325,8 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             hc_gate = gate_headcount(hc.count, cfg)
             if not hc_gate.passed:
                 stats["headcount"] += 1
+                report.reject(sig.company_name, "headcount",
+                              f"{hc_gate.reason} (source: {hc.source})")
                 store.log_drop("headcount", f"{hc_gate.reason} (source: {hc.source})",
                                sig.company_name, sig.url)
                 continue
@@ -292,6 +346,8 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             cap = cfg["gates"]["headcount"].get("max_total_raised_usd", 25_000_000)
             if raised >= cap:
                 stats["headcount"] += 1
+                report.reject(sig.company_name, "headcount",
+                              f"has raised about ${raised / 1e6:.0f}M in total")
                 store.log_drop("headcount",
                                f"has raised ~${raised / 1e6:.0f}M to date — far above a "
                                f"1-{cfg['gates']['headcount']['max']} headcount",
@@ -299,6 +355,8 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
                 continue
             if not ambiguous_band and hc.count is not None and hc.count > ceiling:
                 stats["headcount"] += 1
+                report.reject(sig.company_name, "headcount",
+                              f"about {hc.count} staff according to {hc.source}")
                 store.log_drop("headcount",
                                f"estimated {hc.count}, beyond the {ceiling} plausibility "
                                f"ceiling for an unconfirmed account",
@@ -307,9 +365,12 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             stats["hc_unverified"] += 1
 
         # 4. enrichment (the only paid reasoning step)
-        if budget <= 0:
-            store.queue_review(sig.company_name, sig.url, "enrichment budget exhausted this run")
-            stats["review"] += 1
+        if budget <= 0 or _time.monotonic() > enrich_until:
+            # Out of time or allowance: re-read this article next run rather than
+            # lose the company. Nothing here is dropped.
+            store.requeue_signal(sig.signal_id())
+            stats["time_deferred"] += 1
+            report.carried_over.append(sig.company_name)
             continue
         budget -= 1
         account, reason = enrich(sig, hc, detail, is_follow_on, cfg)
@@ -317,6 +378,7 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             if reason.startswith("ai_veto"):
                 # The model rejected it outright — a drop, not something to review.
                 stats["ai_veto"] += 1
+                report.reject(sig.company_name, "ai_veto", reason)
                 store.log_drop("ai_veto", reason, sig.company_name, sig.url)
             else:
                 stats["review"] += 1
@@ -346,11 +408,17 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         alert_id = store.open_alert(account_id, json.dumps(account.as_dict()))
         wrote = append_row(account, cfg, dry_run)
         pending.append((account, account_id, alert_id, wrote))
+        report.alerts.append((account.company_name, sig.source_id,
+                              report.article_kind.get(sig.url, "individual")))
+        report.by_source[sig.source_id]["alerts"] += 1
         log.info("QUALIFIED %s | HC %s | %s", account.company_name, account.headcount,
                  account.recommended_package)
 
     # 6. ONE digest for the whole run — six qualified accounts is one email, not six.
-    emailed = send_digest([p[0] for p in pending], cfg, dry_run, stats, dead)
+    #    Every email ends with Run Details: what happened and anything that looks wrong.
+    from datetime import datetime as _now_dt, timezone as _now_tz
+    report.finished = _now_dt.now(_now_tz.utc)
+    emailed = send_digest([p[0] for p in pending], cfg, dry_run, stats, dead, report)
 
     # 7. Heartbeat. Silence should never be ambiguous: after N quiet hours, say so.
     hb = cfg["dispatch"].get("heartbeat", {})
@@ -363,8 +431,18 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             if quiet is None:
                 store.mark_now("last_email")          # first ever run; start the clock
             elif quiet >= every:
-                if send_heartbeat(cfg, stats, quiet, dry_run, dead):
+                if send_heartbeat(cfg, stats, quiet, dry_run, dead, report):
                     store.mark_now("last_email")
+                    store.mark_now("last_problem_email")
+            elif has_problem(report, stats, dead):
+                # Something is broken and there is no digest to carry the news. Say so
+                # now rather than waiting hours for the heartbeat — at most every 2 hours
+                # so a lasting fault does not flood the inbox.
+                since = store.hours_since("last_problem_email")
+                if since is None or since >= float(hb.get("problem_every_hours", 2)):
+                    if send_heartbeat(cfg, stats, quiet, dry_run, dead, report,
+                                      problem=True):
+                        store.mark_now("last_problem_email")
 
     for account, account_id, alert_id, wrote in pending:
         # The 180-day cool-off starts only once the account has actually been
