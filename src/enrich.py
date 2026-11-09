@@ -201,14 +201,37 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                     if not data.get("bottleneck"):
                         data["bottleneck"] = ("The article could not be read in full — "
                                               "check the source link before outreach.")
+                elif (_INDIA_REASON.search(reason)
+                      and (data.get("india_presence") or "unknown") != "no"):
+                    # Rejected only for India, and the AI is not SURE: the AE decides.
+                    return None, f"india_unknown: {data.get('hq_location') or ''}"
                 else:
                     log.info("AI veto: %s — %s", sig.company_name, reason)
                     return None, f"ai_veto: {reason}"
 
             # The model's own headcount figure is a GUESS and is never used to drop an
             # account — that is reserved for counted figures. It only informs the email.
-            if data.get("is_india_based") is False and not unreadable:
-                return None, "ai_veto: not India-based"
+            presence = (data.get("india_presence") or "unknown").lower()
+            hq = (data.get("hq_location") or "").strip()
+            if presence == "no" and not unreadable:
+                return None, ("ai_veto: not India-based (confirmed)" +
+                              (f" — based in {hq}" if hq else ""))
+
+            # India must be SHOWN, not assumed. A profile of an Indian-origin investor
+            # once let a San Jose and a Paris company through as "India".
+            verdict = _india_verdict(data, sig, detail or {})
+            if verdict == "foreign" and not unreadable:
+                return None, f"india_unknown: {hq}"
+            link = str((detail or {}).get("india_link") or "")
+            if verdict == "india" and link and not (data.get("india_evidence") or "").strip():
+                hq = data.get("hq_location") or "HQ abroad"
+                data["india_city"] = f"Borderline — {hq}; India link: {link}"[:90]
+            if verdict == "none" and not unreadable:
+                if (sig.raw or {}).get("source_thin"):
+                    # Article could not be read in full: say so, never guess.
+                    data["india_city"] = "Location not confirmed — check"
+                else:
+                    return None, f"india_unknown: {hq}"
 
             return _to_account(data, sig, hc, is_follow_on), "ok"
         except Exception as exc:                                # noqa: BLE001
@@ -216,6 +239,36 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
             log.warning("enrichment call failed (attempt %d): %s", attempt + 1, last_err)
     log.error("enrichment permanently failed for %s: %s", sig.company_name, last_err)
     return None, f"enrichment failed: {last_err}"
+
+
+_INDIA_REASON = re.compile(r"india", re.I)
+
+_INDIA_PLACE = re.compile(
+    r"\b(india|indian|bengaluru|bangalore|mumbai|delhi|ncr|gurugram|gurgaon|noida|"
+    r"hyderabad|chennai|pune|kolkata|ahmedabad|jaipur|kochi|chandigarh|indore|"
+    r"coimbatore|thiruvananthapuram|trivandrum|bhubaneswar|lucknow|nagpur|surat|"
+    r"vadodara|visakhapatnam|mysuru|mysore|goa|mohali|kanpur|bhopal|patna|ranchi)\b",
+    re.I)
+
+
+def _india_verdict(d: dict[str, Any], sig: RawSignal, detail: dict[str, Any]) -> str:
+    """'india' | 'foreign' (based abroad, no India link) | 'none' (nothing either way)."""
+    evidence = (d.get("india_evidence") or "").strip()
+    link = str(detail.get("india_link") or "")
+    gate_city = str(detail.get("city") or "")
+    ai_city = str(d.get("india_city") or "")
+    hq = str(d.get("hq_location") or "")
+    if evidence or link:
+        return "india"
+    if gate_city and gate_city not in ("Unknown",) and _INDIA_PLACE.search(gate_city):
+        return "india"
+    if _INDIA_PLACE.search(hq):
+        return "india"
+    if ai_city and ai_city.lower() != "india" and _INDIA_PLACE.search(ai_city):
+        return "india"
+    if hq:
+        return "foreign"
+    return "none"
 
 
 def _to_account(d: dict[str, Any], sig: RawSignal, hc: HeadcountResult,

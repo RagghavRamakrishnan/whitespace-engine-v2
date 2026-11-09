@@ -24,7 +24,8 @@ on its own — a Delaware, Singapore or UK holding company with its engineering 
 operations team in Bengaluru, NCR, Mumbai, Hyderabad, Chennai or Pune is exactly the \
 target. What does NOT count: a passing mention of India, an India launch, Indian \
 customers, an Indian investor, or an India sales office attached to a foreign team.
-  BORDERLINE (do NOT disqualify, set is_india_based true and say why in the notes): a foreign-HQ company whose founders are Indian or which mentions an India team, office, entity or engineering centre, where the India share of the team is unclear. The AE checks these himself.
+  BORDERLINE (do NOT disqualify, set is_india_based true): a foreign-HQ company where the ARTICLE ITSELF states an India team, office, entity or engineering centre, or Indian founders building it from India, but the India share is unclear. The AE checks these himself.
+  These are NOT an India link: an Indian or Indian-origin INVESTOR, the publisher being Indian, the article mentioning India about some other company, or a founder's name that merely sounds Indian.
 - The company is KNOWN to be large: a well-known established company you are confident \
 has far more than 50 employees (for example Anthropic, OpenAI, Stripe, Uber, Zepto, \
 Swiggy), or the article itself states a team size above 50. Do NOT disqualify on a \
@@ -48,7 +49,7 @@ few lines long, and missing details (website, founders, team size) are filled in
 later or left blank. If the company received funding and none of the reasons above \
 clearly applies, set disqualify to false.
 
-Set `is_india_based` using the >60% test above — true for a foreign-HQ company whose team \
+Set `hq_location` to where the company is headquartered ("San Jose, USA", "Paris, France", "Bengaluru, India") from the article, or null if the article does not say. Set `india_evidence` to the exact words from the article that tie THIS company to India (e.g. "Hyderabad-based", "its Bengaluru engineering team"), or null if there are none. Set `india_presence`: "yes" when india_evidence is not null; "no" ONLY when you are SURE there is no India team — the source explicitly says the whole team is outside India, or it is a well-known company you know has no India operations; otherwise "unknown". Not finding India in the article is "unknown", never "no". NEVER disqualify for lack of an India footprint unless india_presence is "no". Set `is_india_based` true when india_presence is "yes"; otherwise set it using the >60% test above — true for a foreign-HQ company whose team \
 is mostly in India. `estimated_headcount` has ONE specific definition here: **the number that would appear \
 on the company's LinkedIn page under "associated members"** — i.e. how many people \
 currently list this company as their employer on LinkedIn. This is deliberately NOT \

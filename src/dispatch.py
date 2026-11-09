@@ -23,6 +23,7 @@ from .models import QualifiedAccount, SHEET_HEADERS
 from .report import overall as run_details_overall
 from .report import render_html as run_details_html
 from .report import render_text as run_details_text
+from .report import india_unknown_html, india_unknown_text
 
 log = logging.getLogger(__name__)
 
@@ -263,13 +264,15 @@ def send_digest(accounts: Sequence[QualifiedAccount], cfg: dict[str, Any],
                 dead_sources: Sequence[dict[str, Any]] | None = None,
                 report: Any = None) -> bool:
     """One email for the whole run. No accounts means no email."""
-    if not accounts:
+    unknown = list(getattr(report, "india_unknown", []) or [])
+    if not accounts and not unknown:
         log.info("nothing qualified this run — no email sent")
         return True
 
     e = cfg["dispatch"]["email"]
     to_addr = os.getenv("ALERT_TO") or e.get("to", "")
-    subject = digest_subject(accounts)
+    subject = (digest_subject(accounts) if accounts else
+               f"[Whitespace] {len(unknown)} to check — India presence unknown — your call")
 
     if dry_run:
         print("=" * 72)
@@ -292,10 +295,15 @@ def send_digest(accounts: Sequence[QualifiedAccount], cfg: dict[str, Any],
     msg["From"] = f"{e.get('from_name', 'Whitespace Engine')} <{user}>"
     msg["To"] = to_addr
     footer = _footer_text(stats, dead_sources, report)
-    msg.set_content(render_digest_text(accounts) + ("\n\n---\n" + footer if footer else ""))
+    extra = india_unknown_text(report)
+    msg.set_content((render_digest_text(accounts) if accounts else "")
+                    + ("\n\n" + extra if extra else "")
+                    + ("\n\n---\n" + footer if footer else ""))
     if e.get("format", "html") == "html":
-        html_footer = _footer_html(stats, dead_sources, report, footer)
-        msg.add_alternative(render_digest_html(accounts) + html_footer, subtype="html")
+        html_footer = india_unknown_html(report) + _footer_html(stats, dead_sources,
+                                                                  report, footer)
+        msg.add_alternative((render_digest_html(accounts) if accounts else "") + html_footer,
+                            subtype="html")
 
     try:
         with smtplib.SMTP(os.getenv("SMTP_HOST", e.get("smtp_host", "smtp.gmail.com")),

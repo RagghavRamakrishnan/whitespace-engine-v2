@@ -216,7 +216,10 @@ def gate_india(sig: RawSignal, cfg: dict[str, Any], india_pct: float | None = No
             return GateResult(True, f"based in {country}; India link: {link} — AI to verify",
                               {"city": "Unknown", "needs_india_check": True,
                                "india_link": link})
-        return GateResult(False, f"based in {country}, no India team or entity mentioned")
+        # Based abroad, article silent about India. That is NOT proof there is no India
+        # team (geniosAI: San Jose HQ, staff in India). The AE judges these.
+        return GateResult(True, f"based in {country}; India presence unknown",
+                          {"city": "Unknown", "india_unknown": True, "hq": country})
 
     text = _text(sig)
     foreign = FOREIGN_HQ_RE.search(text)

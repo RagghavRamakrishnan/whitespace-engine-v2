@@ -51,7 +51,7 @@ _PLAIN = [
     (re.compile(r"RESOURCE_EXHAUSTED|quota|429.*generativelanguage", re.I),
      lambda m: "The AI hit its usage limit. Unread articles wait for the next run; "
                "the daily allowance resets at 1:30 pm IST."),
-    (re.compile(r"503|UNAVAILABLE|overloaded", re.I),
+    (re.compile(r"503|UNAVAILABLE|overloaded|temporarily unavailable", re.I),
      lambda m: "The AI service was briefly overloaded; the engine waited and retried."),
     (re.compile(r"429"),
      lambda m: "A news site asked the engine to slow down; it waited and retried."),
@@ -129,6 +129,7 @@ class RunReport:
         self.time_up_reading = False
         self.gave_up: list[str] = []
         self.gn_error = ""
+        self.india_unknown: list[tuple[str, str, str, str]] = []  # name, hq, source, url
         self.carried_over: list[str] = []
 
     def reject(self, company: str, stage: str, reason: str) -> None:
@@ -141,7 +142,9 @@ class RunReport:
         reason = re.sub(r"^ai_veto:\s*", "", reason)
         stage = re.sub(r"^gate_", "", stage or "")
         label = STAGE_WORDS.get(stage, stage)
-        if stage == "ai_veto" and re.search(r"not india|no real india|india talent", reason, re.I):
+        if stage == "ai_veto" and re.search(
+                r"not india|no (?:real |genuine )?india|india talent|presence .{0,40}india|"
+                r"footprint .{0,20}india", reason, re.I):
             label = "not India-based"
         self.rejected.append((company, f"{label} — {reason}" if reason else label))
 
@@ -242,13 +245,14 @@ def _checks(rep: RunReport, stats: dict[str, Any],
     if rep.alerts:
         if kinds["roundup"] and kinds["roundup"] / len(rep.alerts) > 0.6:
             out.append((WATCH, f"{kinds['roundup']} of {len(rep.alerts)} alerts came from "
-                        "weekly roundups",
+                        "roundups or articles covering several companies",
                         "Roundups arrive days after the news. Occasional is fine; if most "
                         "emails look like this, individual stories are being missed — tell "
                         "me."))
         else:
             out.append((OK, f"{kinds['individual']} of {len(rep.alerts)} alerts came from "
                         "individual funding stories", ""))
+    # (A "roundup" here is any article naming 3+ funded companies, including profiles.)
 
     # 6. Headcount checking
     have_hc = bool(os.getenv("DIFFBOT_TOKEN") or os.getenv("PDL_API_KEY"))
@@ -283,6 +287,9 @@ def _checks(rep: RunReport, stats: dict[str, Any],
     seen_heads = {h for _, h, _ in out}
     for lvl, text, n in rep.logs.plain_problems()[:6]:
         level = PROBLEM if lvl == "ERROR" else WATCH
+        if re.match(r"The AI service was briefly overloaded|The built-in browser|"
+                    r"A news site asked", text):
+            level = INFO      # handled automatically; shown for completeness only
         if broken and (text.startswith("A news feed could not be downloaded")
                        or re.match(r"The .* source crashed", text)):
             continue      # already reported above as "failed this run"
@@ -300,7 +307,7 @@ def _split_rejected(rep: RunReport):
     foreign, other = [], []
     for c, r in rep.rejected:
         if r.startswith("not India-based"):
-            m = re.search(r"based in ([A-Z][\w .]+?)(?:[,;]|$)", r)
+            m = re.search(r"based in ([A-Z][\w .,]+?)(?=\s+(?:with|and|but)\b|[;.]|, no |$)", r)
             foreign.append(f"{c} ({m.group(1).strip()})" if m else c)
         else:
             other.append((c, r))
@@ -335,6 +342,7 @@ def _story_lines(rep: RunReport, stats: dict[str, Any]) -> list[str]:
         + (f"; {waiting} wait for the next run." if waiting else "."),
         f"The AI found {found} funding mentions. After removing duplicates and checks:",
         f"  • {sent} sent to you in this email",
+        f"  • {len(rep.india_unknown)} with India presence unknown — listed for your call",
         f"  • {len(rep.rejected)} rejected (listed below — tell me if any look wrong)",
         f"  • {len(rep.already_sent)} already sent to you on an earlier run",
     ]
@@ -457,4 +465,37 @@ def render_html(rep: RunReport | None, stats: dict[str, Any],
         h.append("<p><b>Already sent earlier (skipped):</b> "
                  f"{e(', '.join(rep.already_sent[:20]))}</p>")
     h.append("</div>")
+    return "".join(h)
+
+
+def _li_search(name: str) -> str:
+    from urllib.parse import quote
+    return "https://www.linkedin.com/search/results/companies/?keywords=" + quote(name)
+
+
+def india_unknown_text(rep: "RunReport | None") -> str:
+    if not rep or not rep.india_unknown:
+        return ""
+    L = [f"INDIA PRESENCE UNKNOWN — YOUR CALL ({len(rep.india_unknown)})",
+         "Funded, but the article doesn't show whether there is an India team (based abroad, "
+         "or location not stated). Open LinkedIn → People → filter by location India."]
+    for name, hq, src, url in rep.india_unknown:
+        L.append(f"  - {name} — {hq} — {src}\n      article: {url}\n      LinkedIn: {_li_search(name)}")
+    return "\n".join(L)
+
+
+def india_unknown_html(rep: "RunReport | None") -> str:
+    if not rep or not rep.india_unknown:
+        return ""
+    e = html.escape
+    h = ['<div style="margin-top:22px;font-family:Segoe UI,Arial,sans-serif;font-size:13px">',
+         f'<h3 style="margin:0 0 4px">India presence unknown — your call ({len(rep.india_unknown)})</h3>',
+         '<div style="color:#57606a;margin-bottom:6px">Funded, but the article does not '
+         "show whether there is an India team (based abroad, or location not stated). "
+         'Open LinkedIn → People → filter by location India.</div><ul style="margin:0">']
+    for name, hq, src, url in rep.india_unknown:
+        h.append(f'<li><b>{e(name)}</b> — {e(hq)} — <a href="{e(url)}">article</a> · '
+                 f'<a href="{e(_li_search(name))}">LinkedIn</a>'
+                 f'<span style="color:#57606a"> ({e(src[:80])})</span></li>')
+    h.append("</ul></div>")
     return "".join(h)

@@ -82,6 +82,20 @@ def _source_label(sig: RawSignal) -> str:
     return f"{name} — {title}" if title else name
 
 
+def _list_india_unknown(store: Store, report: Any, sig: RawSignal, hq: str) -> None:
+    """Add to the 'India presence unknown — your call' list, once per 30 days."""
+    key = f"india_unknown:{sig.name_key or (sig.company_name or '').lower()}"
+    last = store.hours_since(key)
+    if last is not None and last < 24 * 30:
+        return
+    if any(n == sig.company_name for n, _, _, _ in report.india_unknown):
+        return
+    store.mark_now(key)
+    raw = sig.raw or {}
+    report.india_unknown.append((sig.company_name, hq or "HQ not stated",
+                                 _source_label(sig), raw.get("publisher_url") or sig.url))
+
+
 def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
     report = RunReport(cfg)
     logging.getLogger().addHandler(report.logs)
@@ -221,6 +235,9 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         from_regex = ingest.extract_body_deals(
             art, int(cfg["run"].get("max_deals_per_article", 40)))
         merged = extract.merge_signals(from_llm, from_regex)
+        for m in merged:
+            m.raw = m.raw or {}
+            m.raw["source_thin"] = bool(thin)
         signals.append(art)
         signals.extend(merged)
         stats["companies_found"] += len(merged)
@@ -320,6 +337,12 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         if sig.name_key:
             alerted_names_this_run.add(sig.name_key)
 
+        # 2b. Based abroad, India presence unknown: the AE's call, not ours. Listed in a
+        #     short section of the email (no AI write-up — saves the daily allowance).
+        if detail.get("india_unknown"):
+            _list_india_unknown(store, report, sig, detail.get("hq", ""))
+            continue
+
         # 3. headcount. An UNVERIFIED number may never delete a prospect: a guess that
         #    said "small" is how a 367-person company reached the inbox, and a guess
         #    that says "large" would silently bury a good one. Only a trusted source
@@ -410,6 +433,9 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         budget -= 1
         account, reason = enrich(sig, hc, detail, is_follow_on, cfg)
         if account is None:
+            if reason.startswith("india_unknown"):
+                _list_india_unknown(store, report, sig, reason.split(":", 1)[1].strip())
+                continue
             if reason.startswith("ai_veto"):
                 # The model rejected it outright — a drop, not something to review.
                 stats["ai_veto"] += 1
@@ -455,13 +481,14 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     #    Every email ends with Run Details: what happened and anything that looks wrong.
     from datetime import datetime as _now_dt, timezone as _now_tz
     report.finished = _now_dt.now(_now_tz.utc)
+    stats["india_unknown"] = len(report.india_unknown)
     emailed = send_digest([p[0] for p in pending], cfg, dry_run, stats, dead, report)
 
     # 7. Heartbeat. Silence should never be ambiguous: after N quiet hours, say so.
     hb = cfg["dispatch"].get("heartbeat", {})
     if hb.get("enabled", True):
         every = float(hb.get("quiet_hours", 6))
-        if pending and emailed:
+        if (pending or report.india_unknown) and emailed:
             store.mark_now("last_email")
         else:
             quiet = store.hours_since("last_email")
