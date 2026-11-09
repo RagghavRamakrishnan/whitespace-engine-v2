@@ -211,6 +211,14 @@ def _parse_feed(url: str):
 _HOST_LOCKS: dict[str, Any] = {}
 _HOST_LAST: dict[str, float] = {}
 _HOST_GAP = 2.0          # seconds between requests to the same site
+# Google News only forwards to the publisher, and handles enormous traffic; a long
+# gap there just serialises every Google News download for no benefit.
+_HOST_GAP_OVERRIDE = {"news.google.com": 0.5}
+_AGE_CUTOFF: dict[str, Any] = {"at": None}
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _fetch(url: str) -> str:
@@ -226,7 +234,8 @@ def _fetch(url: str) -> str:
         if pause:
             _time.sleep(pause)
         with lock:
-            gap = _HOST_GAP - (_time.monotonic() - _HOST_LAST.get(host, 0.0))
+            gap = _HOST_GAP_OVERRIDE.get(host, _HOST_GAP) - (
+                _time.monotonic() - _HOST_LAST.get(host, 0.0))
             if gap > 0:
                 _time.sleep(gap)
             _HOST_LAST[host] = _time.monotonic()
@@ -309,7 +318,13 @@ def _enrich_many(sigs: list[RawSignal], workers: int = 3) -> list[RawSignal]:
     """
     if not sigs:
         return []
-    new = [s for s in sigs if not (_already_read and _already_read(s.signal_id()))]
+    # Only download what will actually be used: not already read, and not older
+    # than the age cut-off. (Old articles used to be downloaded every single run and
+    # then thrown away — over 100 a run, minutes of wasted time.)
+    cutoff = _AGE_CUTOFF["at"]
+    new = [s for s in sigs
+           if not (_already_read and _already_read(s.signal_id()))
+           and not (cutoff is not None and _aware(s.published_at) < cutoff)]
     if new:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(_enrich_from_article, new))     # fills each sig.body in place
@@ -528,6 +543,9 @@ def collect(cfg: dict[str, Any], store: Any = None) -> list[RawSignal]:
     _BROWSER["enabled"] = bool(cfg.get("run", {}).get("browser_expand", True))
     _BROWSER["max_pages"] = int(cfg.get("run", {}).get("browser_max_pages", 15))
     _BROWSER["used"] = 0
+    from datetime import timedelta as _td
+    _AGE_CUTOFF["at"] = datetime.now(timezone.utc) - _td(
+        days=int(cfg.get("run", {}).get("max_article_age_days", 3)))
     import time as _time
     _BROWSER["deadline"] = _time.monotonic() + 60 * float(
         cfg.get("run", {}).get("browser_time_budget_minutes", 2.5))

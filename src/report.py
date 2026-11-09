@@ -34,8 +34,8 @@ def source_name(source_id: str) -> str:
 
 # --------------------------------------------------------------- log capture
 # Noise that is normal and says nothing about health.
-_IGNORE = re.compile(r"discarding data: None|AFC is enabled|HTTP Request:|escalating to",
-                     re.I)
+_IGNORE = re.compile(r"discarding data: None|AFC is enabled|HTTP Request:|escalating to"
+                     r"|time budget", re.I)     # time-outs have their own check
 
 # Known technical messages -> what they mean for the AE.
 _PLAIN = [
@@ -174,7 +174,7 @@ def _checks(rep: RunReport, stats: dict[str, Any],
         out.append((OK, f"All {len(enabled)} news sources responded", ""))
 
     # 2. Did articles actually download in full?
-    read = stats.get("articles_read", 0)
+    read = max(stats.get("articles_read", 0) - stats.get("quota_blocked", 0), 0)
     thin = stats.get("thin_body", 0)
     if read and thin:
         share = thin / read
@@ -236,7 +236,13 @@ def _checks(rep: RunReport, stats: dict[str, Any],
                     "LinkedIn people page before claiming it."))
 
     # 7. Time
-    if rep.time_up_reading or rep.carried_over:
+    ai_read = max(stats.get("articles_read", 0) - stats.get("quota_blocked", 0), 0)
+    if rep.time_up_reading and ai_read == 0:
+        out.append((PROBLEM, "No time was left to read any articles",
+                    "Collecting the news used up the whole run, so the AI read nothing. "
+                    "Articles are queued, not lost, but if this repeats the engine never "
+                    "catches up. Send me the log."))
+    elif rep.time_up_reading or rep.carried_over:
         bits = []
         if rep.time_up_reading:
             bits.append("some articles were left for the next run")
@@ -274,8 +280,10 @@ def _story_lines(rep: RunReport, stats: dict[str, Any]) -> list[str]:
     old = stats.get("too_old", 0)
     seen = stats.get("seen", 0)
     new = total - old - seen
-    read = stats.get("articles_read", 0)
-    skipped = max(new - read, 0)
+    money = stats.get("articles_read", 0)
+    waiting = stats.get("quota_blocked", 0)
+    read = max(money - waiting, 0)
+    skipped = max(new - money, 0)
     found = stats.get("companies_found", 0)
     sent = len(rep.alerts)
     days = rep.cfg.get("run", {}).get("max_article_age_days", 3)
@@ -285,17 +293,15 @@ def _story_lines(rep: RunReport, stats: dict[str, Any]) -> list[str]:
         f"  • {_n(old, 'was', 'were')} older than {days} days (ignored — too late to race "
         f"for).",
         f"  • {_n(seen, 'was', 'were')} already read on an earlier run.",
-        f"  • {_n(max(new, 0), 'was', 'were')} new. {read} of them mention money and were "
-        f"read in full by the AI; {skipped} skipped (results, IPOs, launches, hiring news "
-        f"etc.).",
+        f"  • {_n(max(new, 0), 'was', 'were')} new: {money} mention money, {skipped} "
+        f"skipped (results, IPOs, launches, hiring news etc.).",
+        f"  • Of the {money} about money, the AI read {read} in full"
+        + (f"; {waiting} wait for the next run." if waiting else "."),
         f"The AI found {found} funding mentions. After removing duplicates and checks:",
         f"  • {sent} sent to you in this email",
         f"  • {len(rep.rejected)} rejected (listed below — tell me if any look wrong)",
         f"  • {len(rep.already_sent)} already sent to you on an earlier run",
     ]
-    if stats.get("quota_blocked"):
-        lines.append(f"  • {stats['quota_blocked']} article(s) still waiting to be read "
-                     "next run")
     return lines
 
 

@@ -230,7 +230,11 @@ def extract_batch(batch: Sequence[RawSignal], cfg: dict[str, Any],
         data = _parse(call_llm(EXTRACTION_SYSTEM, user, cfg))
     except Exception as exc:                                    # noqa: BLE001
         if _is_quota_error(exc):
-            log.error("extraction stopped: model quota/rate limit hit — %s", exc)
+            if "time budget" in str(exc):
+                log.info("reading paused: this run's time is used up — the rest "
+                         "are read next run")
+            else:
+                log.error("extraction stopped: model quota/rate limit hit — %s", exc)
             raise QuotaExhausted(str(exc)) from exc
         log.error("article extraction failed for batch of %d: %s", len(batch), exc)
         return results, False

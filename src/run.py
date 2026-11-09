@@ -100,7 +100,10 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     import time as _time
     t0 = _time.monotonic()
     budget_s = 60 * float(cfg["run"].get("time_budget_minutes", 8.5))
-    read_until = t0 + budget_s * 0.6          # reading articles
+    # Reading may use everything except a fixed reserve for write-ups and the email.
+    # (It used to be 60% of the run counted from the START — so a slow news-collection
+    # step could use up the reading time before a single article was read.)
+    read_until = t0 + budget_s - 150          # reading articles
     enrich_until = t0 + budget_s - 45         # write-ups; leaves time to email
     stats["time_deferred"] = 0
 
@@ -160,8 +163,6 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
 
     readable = [a for a in fresh if extract.worth_reading(a)]
     stats["articles_read"] = len(readable)
-    for a in readable:
-        report.by_source[a.source_id]["read"] += 1
     use_llm = cfg["run"].get("llm_extraction", True) and not dry_run_llm_off(cfg)
     # Cap requests per run so one busy day cannot burn the whole daily allowance in a
     # single run. Anything not read stays queued and is read on the next run.
@@ -201,6 +202,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             stats["quota_blocked"] += 1
             store.release_signal(sid)
             continue
+        report.by_source[art.source_id]["read"] += 1
 
         thin = extract.body_looks_truncated(art)
         from_llm = extract.to_signals(art, found.get(sid, []))
