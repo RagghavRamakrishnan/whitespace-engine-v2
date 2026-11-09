@@ -175,6 +175,11 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
             data = _parse(call(system, user if not last_err else
                                f"{user}\n\nYour previous output was rejected: {last_err}\n"
                                f"Return corrected JSON only.", cfg))
+            if isinstance(data, dict) and SCHEMA.get("additionalProperties") is False:
+                # The model sometimes adds harmless extra fields ("sources",
+                # "suppressed"). Drop them rather than spend a retry on it.
+                allowed = set(SCHEMA.get("properties", {}))
+                data = {k: v for k, v in data.items() if k in allowed}
             errors = sorted(VALIDATOR.iter_errors(data), key=lambda e: e.path)
             if errors:
                 last_err = "; ".join(f"{'/'.join(map(str, e.path))}: {e.message}"

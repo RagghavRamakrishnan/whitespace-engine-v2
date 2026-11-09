@@ -278,11 +278,59 @@ def _article_text(html: str) -> str:
 _MAX_ARTICLE_CHARS = 120_000
 
 
+_GN_ID = re.compile(r"news\.google\.com/(?:rss/)?articles/([A-Za-z0-9_\-]+)")
+
+
+def _decode_google_news(url: str) -> str:
+    """Turn a Google News link into the publisher's own article link.
+
+    Google News links only forward to the article with JavaScript, so a plain
+    download gets Google's page, not the story (most "partly downloaded" articles).
+    Google's own page carries a signature that its public endpoint swaps for the real
+    link — the same step a browser performs. Nothing is bypassed: the result is the
+    ordinary public article URL. Any failure returns "" and the browser is used.
+    """
+    import json as _json
+    m = _GN_ID.search(url or "")
+    if not m:
+        return ""
+    gid = m.group(1)
+    try:
+        page = _fetch(f"https://news.google.com/rss/articles/{gid}")
+        sg = re.search(r'data-n-a-sg="([^"]+)"', page)
+        ts = re.search(r'data-n-a-ts="([^"]+)"', page)
+        if not (sg and ts):
+            return ""
+        inner = ('["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,'
+                 'null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],'
+                 f'"{gid}",{ts.group(1)},"{sg.group(1)}"]')
+        payload = "f.req=" + requests.utils.quote(_json.dumps([[["Fbv4je", inner]]]))
+        r = requests.post("https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                          headers={**UA, "content-type":
+                                   "application/x-www-form-urlencoded;charset=UTF-8"},
+                          data=payload, timeout=TIMEOUT)
+        r.raise_for_status()
+        rows = _json.loads(r.text.split("\n\n")[1])[:-2]
+        real = _json.loads(rows[0][2])[1]
+        return real if isinstance(real, str) and real.startswith("http") else ""
+    except Exception as exc:                                    # noqa: BLE001
+        log.info("google news link not decoded (%s) — browser will open it", exc)
+        return ""
+
+
 def _enrich_from_article(sig: RawSignal) -> RawSignal:
     """Download the full article and keep all of its text.
     A failure here never kills the signal; the reader flags it as an incomplete read."""
     try:
-        html = _fetch(sig.url)
+        target = sig.url
+        if "news.google." in (sig.url or ""):
+            real = _decode_google_news(sig.url)
+            if real:
+                # sig.url stays the Google link: it is this article's identity in the
+                # memory, so it is still recognised as "already read" next run.
+                sig.raw["publisher_url"] = real
+                target = real
+        html = _fetch(target)
         text = _article_text(html)
         if text and len(text) > len(sig.body or ""):
             sig.body = text[:_MAX_ARTICLE_CHARS]
@@ -359,10 +407,10 @@ def _expand_in_browser(sigs: list[RawSignal]) -> None:
     todo = todo[:left]
     _BROWSER["used"] += len(todo)
     from . import browser
-    got = browser.fetch_full_pages([s.url for s in todo], _article_text,
-                                   max_pages=left, deadline=dl)
-    for s in todo:
-        r = got.get(s.url)
+    urls = [s.raw.get("publisher_url") or s.url for s in todo]
+    got = browser.fetch_full_pages(urls, _article_text, max_pages=left, deadline=dl)
+    for s, u in zip(todo, urls):
+        r = got.get(u)
         if not r:
             continue
         FETCH_STATS["browser_opened"] += 1

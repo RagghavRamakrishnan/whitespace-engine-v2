@@ -47,8 +47,16 @@ _DEAL_HINT = re.compile(
     r"series\s+[a-f]|pre-seed|stealth|grant)\b", re.I)
 
 
+_AMOUNT_IN_HEADLINE = re.compile(
+    r"[$₹€£]\s?\d|\b(?:rs|inr|usd)\.?\s?\d|\d\s?(?:cr|crore|mn|million|bn|billion|lakh|k)\b",
+    re.I)
+
+
 def _looks_like_a_deal(sig: RawSignal) -> bool:
-    return bool(_DEAL_HINT.search(f"{sig.title} {(sig.body or '')[:1500]}"))
+    """A headline that names an amount AND uses a funding word ("X raises $2 Mn").
+    "Jefferies raises India allocation to 14%" has the word but no amount."""
+    return bool(_DEAL_HINT.search(sig.title or "")
+                and _AMOUNT_IN_HEADLINE.search(sig.title or ""))
 
 
 def _same_company(a: str, b: str) -> bool:
@@ -150,6 +158,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     # union is used, so a company is only lost if BOTH extractors missed it.
     signals: list[RawSignal] = []
     fresh: list[RawSignal] = []
+    attempt_no: dict[str, int] = {}
     for art in articles:
         if store.is_signal_seen(art.signal_id()):
             stats["seen"] += 1
@@ -158,7 +167,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         # Record an ATTEMPT, not a completion. The article is only marked processed
         # once it has actually been read — a failed read comes back next run instead
         # of vanishing.
-        store.claim_signal(art.signal_id(), art.source_id)
+        attempt_no[art.signal_id()] = store.claim_signal(art.signal_id(), art.source_id)
         fresh.append(art)
 
     readable = [a for a in fresh if extract.worth_reading(a)]
@@ -217,6 +226,12 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             "roundup" if extract.stated_deal_count(art) > 0 or len(merged) >= 3
             else "individual")
 
+        if thin and st == "read" and attempt_no.get(sid, 1) >= 2:
+            # Already retried once and the full text still won't download. Re-reading
+            # the same summary with the AI again gains nothing and used to end in a
+            # "given up" alarm. Keep what was found and move on.
+            stats["thin_accepted"] = stats.get("thin_accepted", 0) + 1
+            thin = False
         if st != "read" or thin:
             # Not a complete read: leave unprocessed so the next run tries again.
             if thin:
@@ -251,11 +266,22 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     # Articles given up on after repeated failures must not disappear quietly.
     for row in store.stale_unprocessed(int(cfg["run"].get("max_read_attempts", 4))):
         stats["gave_up"] += 1
+        report.gave_up.append(row["signal_id"].split(":", 1)[-1])
+        store.mark_signal_processed(row["signal_id"])   # reported once, not every run
 
     stats["signals"] = len(signals)
     budget = cfg["run"].get("max_enrichments_per_run", 25)
 
     for sig in signals:
+        # 0. Already sent to the AE? Checked FIRST: a company already in the inbox must
+        #    never be re-judged (and wrongly "rejected") from a thinner second article.
+        if any((sig.domain_key, sig.slug_key, sig.name_key)):
+            early, _r = store.dedup_check(sig.domain_key, sig.slug_key, sig.name_key)
+            if early == "cooloff":
+                stats["dedup"] += 1
+                if sig.company_name and sig.company_name not in report.already_sent:
+                    report.already_sent.append(sig.company_name)
+                continue
         # 1. hard gates (cheap, deterministic)
         passed, reason, detail = run_hard_gates(sig, cfg)
         if not passed:
@@ -355,7 +381,11 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
                                f"1-{cfg['gates']['headcount']['max']} headcount",
                                sig.company_name, sig.url)
                 continue
-            if not ambiguous_band and hc.count is not None and hc.count > ceiling:
+            # A stage-based GUESS ("Series B companies are usually ~130 people") is
+            # never allowed to delete a prospect — only a stated or measured number.
+            guessed = hc.source in ("stage_estimate", "estimate", "llm_estimate")
+            if not ambiguous_band and not guessed and hc.count is not None \
+                    and hc.count > ceiling:
                 stats["headcount"] += 1
                 report.reject(sig.company_name, "headcount",
                               f"about {hc.count} staff according to {hc.source}")
@@ -389,6 +419,8 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         account.headcount_verified = trusted
         account.headcount_note = hc.note
         account.source_label = _source_label(sig)
+        if (sig.raw or {}).get("publisher_url"):
+            account.source_url = sig.raw["publisher_url"]   # the real article, not a Google link
         # The AI may name it differently from the headline ("ScaNxt" vs "ScaNxt
         # Scientific Technologies Pvt Ltd"). Check its final name against this run too.
         final_key = normalize_company_name(account.company_name)

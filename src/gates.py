@@ -200,6 +200,24 @@ def gate_india(sig: RawSignal, cfg: dict[str, Any], india_pct: float | None = No
         if india_pct >= g["min_india_headcount_pct"]:
             return GateResult(True, f"{india_pct:.0f}% of headcount in India")
         return GateResult(False, f"only {india_pct:.0f}% of headcount in India")
+    # What the AI reader found when it read the whole article. This beats keyword
+    # matching on a few hundred characters (which once called Hyderabad-based
+    # Cosmoserve "not Indian" because a one-line summary didn't name the city).
+    ex = (sig.raw or {}).get("extracted") or {}
+    country = str(ex.get("hq_country") or "").strip()
+    link = str(ex.get("india_link") or "").strip()
+    if ex.get("city"):
+        return GateResult(True, f"India hub stated: {ex['city']}", {"city": ex["city"]})
+    if country and re.search(r"\bindia\b", country, re.I):
+        return GateResult(True, "headquartered in India", {"city": "India"})
+    if country:
+        if link:
+            # Foreign HQ with an India connection: borderline — the AE decides.
+            return GateResult(True, f"based in {country}; India link: {link} — AI to verify",
+                              {"city": "Unknown", "needs_india_check": True,
+                               "india_link": link})
+        return GateResult(False, f"based in {country}, no India team or entity mentioned")
+
     text = _text(sig)
     foreign = FOREIGN_HQ_RE.search(text)
     hits = [(text.find(c.lower()), c) for c in g["hub_cities"] if c.lower() in text]
@@ -221,6 +239,11 @@ def gate_india(sig: RawSignal, cfg: dict[str, Any], india_pct: float | None = No
     # reach this gate because _text() only sees the article lead.
     if re.search(r"\bindia(n)?\b", text):
         return GateResult(True, "India entity referenced", {"city": "India"})
+    if sig.from_body:
+        # A company the reader pulled out of an article, with no location either way:
+        # not knowing is not evidence. Let the AI check, never silently drop.
+        return GateResult(True, "location not stated — AI to verify",
+                          {"city": "Unknown", "needs_india_check": True})
     return GateResult(False, "no Indian entity or talent footprint found")
 
 

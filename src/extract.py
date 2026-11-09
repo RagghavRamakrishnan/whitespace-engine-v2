@@ -112,6 +112,8 @@ Return JSON only, in this exact shape:
     "amount": "<e.g. $2.4M or Rs 15 crore, or null>",
     "round_type": "<Pre-Seed|Seed|Angel|Pre-Series A|Series A|Series B|Bridge|Grant|Accelerator|Debt|Extension|Undisclosed>",
     "city": "<Indian city if stated, else null>",
+    "hq_country": "<country where the company is headquartered, if stated, else null>",
+    "india_link": "<if based outside India: any India team, office, entity or Indian founders the article mentions, else null>",
     "sector": "<one short phrase if stated, else null>",
     "investors": "<comma-separated if stated, else null>",
     "evidence": "<the sentence or fragment that states the raise>"}}
@@ -120,7 +122,7 @@ Return JSON only, in this exact shape:
 EXTRACTION_SCHEMA_HINT = {
     "articles": [{"article_index": 0, "companies": [{
         "company_name": "", "amount": None, "round_type": "Seed", "city": None,
-        "sector": None, "investors": None, "evidence": ""}]}]
+        "hq_country": None, "india_link": None, "sector": None, "investors": None, "evidence": ""}]}]
 }
 
 
@@ -482,6 +484,7 @@ def to_signals(parent: RawSignal, companies: Sequence[dict[str, Any]]) -> list[R
             from_body=True,
         )
         s.raw = {"extracted": dict(c), "parent_title": parent.title,
+                 "publisher_url": (parent.raw or {}).get("publisher_url", ""),
                  "publisher": (parent.raw or {}).get("publisher", "")}
         out.append(s)
     return out

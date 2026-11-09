@@ -23,8 +23,8 @@ SOURCE_NAMES = {"entrackr": "Entrackr", "inc42": "Inc42", "yourstory": "YourStor
                 "mca_pas3": "MCA filings", "idex": "iDEX", "birac": "BIRAC", "tdb": "TDB",
                 "yc_india": "Y Combinator", "antler": "Antler", "x_social": "X / Twitter"}
 
-STAGE_WORDS = {"company": "not a company", "capital": "no new funding found",
-               "india": "not India-based", "icp": "outside ICP",
+STAGE_WORDS = {"company": "not a company", "is_company": "not a company",
+               "capital": "funding check", "india": "not India-based", "icp": "outside ICP",
                "headcount": "too large", "ai_veto": "AI review", "dedup": "already sent"}
 
 
@@ -127,6 +127,7 @@ class RunReport:
         self.newest_alert_hours: list[float] = []
         self.logs = LogCollector()
         self.time_up_reading = False
+        self.gave_up: list[str] = []
         self.carried_over: list[str] = []
 
     def reject(self, company: str, stage: str, reason: str) -> None:
@@ -137,7 +138,10 @@ class RunReport:
             return
         reason = re.sub(r"^\w+:\s*", "", reason or "").strip()
         reason = re.sub(r"^ai_veto:\s*", "", reason)
+        stage = re.sub(r"^gate_", "", stage or "")
         label = STAGE_WORDS.get(stage, stage)
+        if stage == "ai_veto" and re.search(r"not india|no real india|india talent", reason, re.I):
+            label = "not India-based"
         self.rejected.append((company, f"{label} — {reason}" if reason else label))
 
 
@@ -197,8 +201,10 @@ def _checks(rep: RunReport, stats: dict[str, Any],
         out.append((PROBLEM, f"Read {read} articles but found no companies at all",
                     "Reading may be broken. Send me the log."))
     if stats.get("gave_up"):
-        out.append((PROBLEM, f"{stats['gave_up']} article(s) failed 4 times and were "
-                    "given up on", "Companies in them were never checked. Send me the log."))
+        ex = "; ".join(rep.gave_up[:3])
+        out.append((WATCH, f"{stats['gave_up']} article(s) could not be read after 4 tries",
+                    "Usually pages that never download. Each is reported once, then "
+                    "dropped from this list."))
 
     # 4. Possible misses
     if stats.get("possible_misses"):
@@ -269,6 +275,19 @@ def _checks(rep: RunReport, stats: dict[str, Any],
     order = {PROBLEM: 0, WATCH: 1, INFO: 2, OK: 3}
     out.sort(key=lambda x: order[x[0]])
     return out
+
+
+def _split_rejected(rep: RunReport):
+    """(foreign, other). Foreign ones become one scannable line of names; the rest keep
+    their reasons, because those are the ones worth reading."""
+    foreign, other = [], []
+    for c, r in rep.rejected:
+        if r.startswith("not India-based"):
+            m = re.search(r"based in ([A-Z][\w .]+?)(?:[,;]|$)", r)
+            foreign.append(f"{c} ({m.group(1).strip()})" if m else c)
+        else:
+            other.append((c, r))
+    return foreign, other
 
 
 def _n(n: int, one: str, many: str) -> str:
@@ -355,11 +374,14 @@ def render_text(rep: RunReport | None, stats: dict[str, Any],
         if d:
             L.append(f"      {d}")
     if rep.rejected:
+        foreign, other = _split_rejected(rep)
         L += ["", "REJECTED THIS RUN (tell me if any should have come through)"]
-        for c, r in rep.rejected[:30]:
-            L.append(f"  - {c}: {r[:160]}")
-        if len(rep.rejected) > 30:
-            L.append(f"  … and {len(rep.rejected) - 30} more")
+        for c, r in other[:30]:
+            L.append(f"  - {c}: {r[:200]}")
+        if len(other) > 30:
+            L.append(f"  … and {len(other) - 30} more")
+        if foreign:
+            L.append(f"  - Not India-based ({len(foreign)}): " + ", ".join(foreign))
     if rep.already_sent:
         L += ["", "ALREADY SENT EARLIER (skipped): " + ", ".join(rep.already_sent[:20])]
     return "\n".join(L)
@@ -403,12 +425,16 @@ def render_html(rep: RunReport | None, stats: dict[str, Any],
                  f"<td {td} align=center>{c}</td><td {td} align=center>{a}</td></tr>")
     h.append("</table>")
     if rep.rejected:
+        foreign, other = _split_rejected(rep)
         h.append("<b>Rejected this run</b> <span style='color:#57606a'>— tell me if any "
                  "should have come through</span><ul style='margin:4px 0 10px'>")
-        for c, r in rep.rejected[:30]:
-            h.append(f"<li><b>{e(c)}</b>: {e(r[:160])}</li>")
-        if len(rep.rejected) > 30:
-            h.append(f"<li>… and {len(rep.rejected) - 30} more</li>")
+        for c, r in other[:30]:
+            h.append(f"<li><b>{e(c)}</b>: {e(r[:200])}</li>")
+        if len(other) > 30:
+            h.append(f"<li>… and {len(other) - 30} more</li>")
+        if foreign:
+            h.append(f"<li><b>Not India-based ({len(foreign)}):</b> "
+                     f"{e(', '.join(foreign))}</li>")
         h.append("</ul>")
     if rep.already_sent:
         h.append("<p><b>Already sent earlier (skipped):</b> "

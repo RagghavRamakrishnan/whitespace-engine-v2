@@ -24,6 +24,7 @@ on its own — a Delaware, Singapore or UK holding company with its engineering 
 operations team in Bengaluru, NCR, Mumbai, Hyderabad, Chennai or Pune is exactly the \
 target. What does NOT count: a passing mention of India, an India launch, Indian \
 customers, an Indian investor, or an India sales office attached to a foreign team.
+  BORDERLINE (do NOT disqualify, set is_india_based true and say why in the notes): a foreign-HQ company whose founders are Indian or which mentions an India team, office, entity or engineering centre, where the India share of the team is unclear. The AE checks these himself.
 - The company is KNOWN to be large: a well-known established company you are confident \
 has far more than 50 employees (for example Anthropic, OpenAI, Stripe, Uber, Zepto, \
 Swiggy), or the article itself states a team size above 50. Do NOT disqualify on a \
@@ -31,7 +32,7 @@ guess about size or business model — an operations-heavy business model (clini
 restaurants, delivery, robots, manufacturing) is NOT a reason to disqualify. Size \
 uncertainty is resolved later by a human check, not by you.
 - There is no genuine NEW funding event — a rumour, a fund announcing its own pool, an \
-"in talks to raise", or an acquisition. A company named in a weekly or monthly \
+"in talks to raise", or a full acquisition of the company. A strategic or minority stake investment (for example a corporate buying 20-49%) IS a funding event. A company named in a weekly or monthly \
 funding ROUNDUP as having raised money this week DOES have a genuine funding event, \
 even if the roundup gives only one line about it.
 - The named entity is really a headline fragment or a publisher's own name.
