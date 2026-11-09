@@ -129,7 +129,15 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
         page = ctx.new_page()
         for url in list(urls)[:max_pages]:
             try:
-                page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                try:
+                    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                except Exception as nav_exc:                # noqa: BLE001
+                    # Google News forwards to the publisher while its own page is
+                    # still opening, which aborts the first page load. That is the
+                    # forward working, not a failure — carry on and follow it.
+                    if not re.search(r"interrupted by another navigation|ERR_ABORTED",
+                                     str(nav_exc)):
+                        raise
                 # Google News links forward to the publisher with JavaScript a moment
                 # after loading. Wait for that hop before touching the page, or the
                 # page is torn down mid-read.
@@ -144,10 +152,27 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
                 except Exception:                           # noqa: BLE001
                     pass
                 page.wait_for_timeout(1500)
+                # Still parked on a Google page: follow its link to the publisher.
+                if "google." in page.url:
+                    try:
+                        href = page.evaluate("""() => {
+                          const a=[...document.querySelectorAll('a[href^="http"]')]
+                            .map(x=>x.href).find(h=>!/google\\./.test(h));
+                          return a||null; }""")
+                        if href:
+                            page.goto(href, timeout=timeout_ms, wait_until="domcontentloaded")
+                            page.wait_for_timeout(1500)
+                    except Exception:                       # noqa: BLE001
+                        pass
                 clicked = 0
                 for _ in range(3):                          # some articles expand in stages
-                    n = page.evaluate(_CLICK_SCRIPT,
-                                      [EXPAND_TEXT.pattern, PAYWALL_CONTROL.pattern])
+                    try:
+                        n = page.evaluate(_CLICK_SCRIPT,
+                                          [EXPAND_TEXT.pattern, PAYWALL_CONTROL.pattern])
+                    except Exception:                       # noqa: BLE001
+                        # The page moved on (a late redirect). Let it settle; read it.
+                        page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                        n = 0
                     clicked += n
                     page.mouse.wheel(0, 20000)              # trigger lazy-loaded sections
                     page.wait_for_timeout(1200)

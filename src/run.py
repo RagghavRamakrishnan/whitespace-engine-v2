@@ -50,6 +50,29 @@ def _looks_like_a_deal(sig: RawSignal) -> bool:
     return bool(_DEAL_HINT.search(f"{sig.title} {(sig.body or '')[:1500]}"))
 
 
+def _same_company(a: str, b: str) -> bool:
+    """Same company under a shorter or longer name: "scanxt" vs "scanxt scientific"."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 4 and long_.startswith(short + " ")
+
+
+_SOURCE_NAMES = {"entrackr": "Entrackr", "inc42": "Inc42", "yourstory": "YourStory",
+                 "ettech": "ET Tech", "vccircle": "VCCircle", "livemint_tech": "Mint",
+                 "moneycontrol_startup": "Moneycontrol", "google_news": "Google News"}
+
+
+def _source_label(sig: RawSignal) -> str:
+    raw = sig.raw or {}
+    name = raw.get("publisher") or _SOURCE_NAMES.get(sig.source_id, sig.source_id)
+    title = raw.get("parent_title") or sig.title or ""
+    title = title if len(title) <= 100 else title[:97] + "…"
+    return f"{name} — {title}" if title else name
+
+
 def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
     store = Store(cfg["storage"].get("sqlite_path", "./whitespace.db"),
                   cool_off_days=cfg["dispatch"].get("dedup_days", 180))
@@ -62,6 +85,7 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
 
     pending: list[tuple[Any, int, int, bool]] = []
     alerted_this_run: set[str] = set()
+    alerted_names_this_run: set[str] = set()
     articles = ingest.collect(cfg, store)
 
     # Only recent news. A funding story older than this is not a whitespace race any
@@ -197,7 +221,9 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
         # Same company mentioned by two articles in THIS run: the database only records
         # an alert once the email has gone out, so it cannot catch this on its own.
         run_keys = {k for k in (sig.domain_key, sig.slug_key, sig.name_key) if k}
-        if run_keys & alerted_this_run:
+        if run_keys & alerted_this_run or (
+                sig.name_key and any(_same_company(sig.name_key, k)
+                                     for k in alerted_names_this_run)):
             stats["dedup"] += 1
             continue
         state, _row = store.dedup_check(sig.domain_key, sig.slug_key, sig.name_key)
@@ -208,6 +234,8 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             continue
         is_follow_on = state == "follow_on"
         alerted_this_run |= run_keys
+        if sig.name_key:
+            alerted_names_this_run.add(sig.name_key)
 
         # 3. headcount. An UNVERIFIED number may never delete a prospect: a guess that
         #    said "small" is how a 367-person company reached the inbox, and a guess
@@ -296,6 +324,16 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             continue
         account.headcount_verified = trusted
         account.headcount_note = hc.note
+        account.source_label = _source_label(sig)
+        # The AI may name it differently from the headline ("ScaNxt" vs "ScaNxt
+        # Scientific Technologies Pvt Ltd"). Check its final name against this run too.
+        final_key = normalize_company_name(account.company_name)
+        if final_key and final_key != sig.name_key and any(
+                _same_company(final_key, k) for k in alerted_names_this_run):
+            stats["dedup"] += 1
+            continue
+        if final_key:
+            alerted_names_this_run.add(final_key)
         stats["enriched"] += 1
 
         # 5. collected now, dispatched once at the end of the run as a single digest

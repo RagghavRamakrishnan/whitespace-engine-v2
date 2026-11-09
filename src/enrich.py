@@ -6,6 +6,7 @@ gates and headcount verification. That ordering is what keeps this cheap.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import os
 import time
@@ -104,6 +105,15 @@ PROVIDERS = {"groq": _call_groq, "openai": _call_openai,
              "anthropic": _call_anthropic, "google": _call_google}
 
 
+# Rejection reasons that are really "I couldn't read the page", not facts about the
+# company.
+_UNREADABLE = re.compile(
+    r"error page|no (?:actual |article |real )?content|could ?n[o']?t (?:be )?"
+    r"(?:read|load|access|resolve)|unresolvable|insufficient|sparse|"
+    r"lack(?:s|ing)? (?:of )?(?:detail|content|information|text)|"
+    r"not (?:enough|sufficient) (?:detail|information|text)|page (?:is )?unavailable|"
+    r"only (?:a |the )?headline", re.I)
+
 _last_call_at = 0.0
 
 
@@ -173,14 +183,26 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                 continue
 
             # The model has final say — it read the whole article, the gates did not.
+            unreadable = False
             if data.get("disqualify"):
                 reason = data.get("disqualify_reason") or "disqualified by AI review"
-                log.info("AI veto: %s — %s", sig.company_name, reason)
-                return None, f"ai_veto: {reason}"
+                if _UNREADABLE.search(reason):
+                    # The page did not load properly — that says nothing about the
+                    # company. Send it through for the AE to check rather than drop it.
+                    log.info("not rejecting %s — article could not be read (%s)",
+                             sig.company_name, reason[:80])
+                    unreadable = True
+                    data["disqualify"] = False
+                    if not data.get("bottleneck"):
+                        data["bottleneck"] = ("The article could not be read in full — "
+                                              "check the source link before outreach.")
+                else:
+                    log.info("AI veto: %s — %s", sig.company_name, reason)
+                    return None, f"ai_veto: {reason}"
 
             # The model's own headcount figure is a GUESS and is never used to drop an
             # account — that is reserved for counted figures. It only informs the email.
-            if data.get("is_india_based") is False:
+            if data.get("is_india_based") is False and not unreadable:
                 return None, "ai_veto: not India-based"
 
             return _to_account(data, sig, hc, is_follow_on), "ok"

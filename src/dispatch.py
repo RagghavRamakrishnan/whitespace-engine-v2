@@ -50,6 +50,8 @@ def _confidence_note(a: QualifiedAccount) -> str:
     if a.headcount_note.startswith("LinkedIn band "):
         return ("LinkedIn's self-reported band — often stale or overstated. "
                 "The people page shows the real member count")
+    if a.headcount_display() == "Unknown":
+        return "not known yet — open the people page to see it"
     return f"UNCONFIRMED ({label}) — open the people page"
 
 
@@ -65,7 +67,7 @@ def digest_subject(accounts: Sequence[QualifiedAccount]) -> str:
     if n == 1:
         a = accounts[0]
         tag = " [Follow-on]" if a.is_follow_on else ""
-        return f"[Whitespace] {a.company_name} | {a.round_type} | HC: {a.headcount}{tag}"
+        return f"[Whitespace] {a.company_name} | {a.round_type} | HC: {a.headcount_display()}{tag}"
     names = ", ".join(a.company_name for a in accounts[:3])
     more = f" +{n - 3} more" if n > 3 else ""
     return f"[Whitespace] {n} new accounts — {names}{more}"
@@ -103,7 +105,7 @@ LTS FIT
 INMAIL DRAFT
 "{a.inmail_hook}"
 
-Source: {a.source_url}
+Source: {a.source_label or 'article'} — {a.source_url}
 """
 
 
@@ -169,7 +171,7 @@ def _render_cards(accounts: Sequence[QualifiedAccount], start: int = 1) -> str:
   <div style="font-size:12px;margin-top:10px">
     <a href="{html.escape(a.website or '#')}">website</a> ·
     <a href="{html.escape(a.linkedin_url or '#')}">company page</a> ·
-    <a href="{html.escape(a.source_url)}">source article</a>
+    <a href="{html.escape(a.source_url)}">source: {html.escape(a.source_label or 'article')}</a>
   </div>
 </div>""")
     return "".join(cards)

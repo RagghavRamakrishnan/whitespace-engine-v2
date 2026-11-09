@@ -477,7 +477,8 @@ def to_signals(parent: RawSignal, companies: Sequence[dict[str, Any]]) -> list[R
             signal_type=parent.signal_type,
             from_body=True,
         )
-        s.raw = {"extracted": dict(c), "parent_title": parent.title}
+        s.raw = {"extracted": dict(c), "parent_title": parent.title,
+                 "publisher": (parent.raw or {}).get("publisher", "")}
         out.append(s)
     return out
 

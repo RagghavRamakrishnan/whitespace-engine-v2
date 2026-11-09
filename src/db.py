@@ -202,8 +202,11 @@ class Store:
                    WHERE (normalized_domain <> '' AND normalized_domain = ?)
                       OR (linkedin_company_slug <> '' AND linkedin_company_slug = ?)
                       OR (COALESCE(normalized_name,'') <> '' AND normalized_name = ?)
+                      OR (length(?) >= 4 AND length(COALESCE(normalized_name,'')) >= 4
+                          AND (normalized_name LIKE ? OR ? LIKE normalized_name || ' %'))
                    LIMIT 1""",
-                (domain or "\x00", slug or "\x00", name or "\x00"),
+                (domain or "\x00", slug or "\x00", name or "\x00",
+                 name or "", (name or "\x00") + " %", name or "\x00"),
             ).fetchone()
 
     def dedup_check(self, domain: str, slug: str,

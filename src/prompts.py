@@ -36,7 +36,12 @@ funding ROUNDUP as having raised money this week DOES have a genuine funding eve
 even if the roundup gives only one line about it.
 - The named entity is really a headline fragment or a publisher's own name.
 
-Disqualify ONLY when one of the reasons above is clearly true. A short or \
+Disqualify ONLY when one of the reasons above is clearly true. NEVER disqualify \
+because the company's sector or business model looks outside the ICP — real estate, \
+co-living, food service, restaurants, media, retail, events, anything. The AE prefers \
+to judge borderline sectors himself; label the sector honestly and let it through. \
+Never disqualify because a round is large unless the company itself is well known \
+to have far more than 50 employees. A short or \
 sparse article is NEVER a reason to disqualify — many real funding stories are a \
 few lines long, and missing details (website, founders, team size) are filled in \
 later or left blank. If the company received funding and none of the reasons above \

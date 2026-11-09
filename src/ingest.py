@@ -208,10 +208,34 @@ def _parse_feed(url: str):
     return feedparser.parse(url)
 
 
+_HOST_LOCKS: dict[str, Any] = {}
+_HOST_LAST: dict[str, float] = {}
+_HOST_GAP = 2.0          # seconds between requests to the same site
+
+
 def _fetch(url: str) -> str:
-    r = requests.get(url, headers=UA, timeout=TIMEOUT, allow_redirects=True)
-    r.raise_for_status()
-    return r.text
+    """Download a page politely: at most one request every couple of seconds per
+    site, and if the site says "too many requests" (429), wait and try again.
+    Inc42 refused downloads twice for being asked too quickly."""
+    import threading
+    import time as _time
+    from urllib.parse import urlparse
+    host = urlparse(url).netloc
+    lock = _HOST_LOCKS.setdefault(host, threading.Lock())
+    for attempt, pause in enumerate((0, 8, 20)):
+        if pause:
+            _time.sleep(pause)
+        with lock:
+            gap = _HOST_GAP - (_time.monotonic() - _HOST_LAST.get(host, 0.0))
+            if gap > 0:
+                _time.sleep(gap)
+            _HOST_LAST[host] = _time.monotonic()
+        r = requests.get(url, headers=UA, timeout=TIMEOUT, allow_redirects=True)
+        if getattr(r, "status_code", 200) == 429 and attempt < 2:
+            continue
+        r.raise_for_status()
+        return r.text
+    return ""
 
 
 def _article_text(html: str) -> str:
@@ -328,7 +352,10 @@ def _entry_to_signal(source: dict[str, Any], e: Any, strip_publisher: bool = Fal
     published = datetime(*e.published_parsed[:6], tzinfo=timezone.utc) \
         if getattr(e, "published_parsed", None) else datetime.now(timezone.utc)
     title = getattr(e, "title", "") or ""
+    publisher = ""
     if strip_publisher:
+        pm = re.search(r"\s+-\s+([^-]{2,40})$", title)
+        publisher = pm.group(1).strip() if pm else ""
         # Google News appends " - Publisher"; strip it before company extraction.
         title = re.sub(r"\s+-\s+[^-]{2,40}$", "", title)
     # Feeds that carry the full article (Entrackr does) put it in `content`.
@@ -340,9 +367,12 @@ def _entry_to_signal(source: dict[str, Any], e: Any, strip_publisher: bool = Fal
     if not body:
         body = getattr(e, "summary", "") or ""
     body = re.sub(r"\s+", " ", re.sub("<[^<]+?>", " ", body)).strip()
-    return RawSignal(source_id=source["id"], title=title, url=getattr(e, "link", "") or "",
+    sig = RawSignal(source_id=source["id"], title=title, url=getattr(e, "link", "") or "",
                      published_at=published, body=body[:_MAX_ARTICLE_CHARS],
                      company_name=_guess_company(title), signal_type="funding")
+    if publisher:
+        sig.raw["publisher"] = publisher
+    return sig
 
 
 def ingest_rss(source: dict[str, Any]) -> list[RawSignal]:

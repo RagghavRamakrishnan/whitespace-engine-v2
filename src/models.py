@@ -164,6 +164,7 @@ class QualifiedAccount:
     is_follow_on: bool = False
     headcount_verified: bool = False   # False => shown in the "confirm" section
     headcount_note: str = ""           # e.g. "LinkedIn band 11-50 employees"
+    source_label: str = ""             # e.g. "Inc42 — From GIVA To EloElo Group…"
     detected_at: datetime = field(default_factory=datetime.now)
 
     def headcount_display(self) -> str:
@@ -175,7 +176,13 @@ class QualifiedAccount:
         m = re.match(r"LinkedIn band (\d[\d,]*-\d[\d,]*)", self.headcount_note)
         if m:
             return m.group(1) + ("" if self.headcount_verified else " (self-reported)")
-        return str(self.headcount) + ("" if self.headcount_verified else " (est.)")
+        if self.headcount_verified:
+            return str(self.headcount)
+        if self.headcount_source == "press_statement":
+            return f"{self.headcount} (stated in article)"
+        # A stage-based guess is not shown as a number: "22" on every company looks
+        # like data when it is a placeholder.
+        return "Unknown"
 
     def to_row(self) -> list[str]:
         """Master spreadsheet columns A..O, in schema order."""
