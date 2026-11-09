@@ -16,7 +16,11 @@ run:
   # Google News searches, which otherwise return months-old stories.
   max_article_age_days: 3
   browser_expand: true
-  browser_max_pages: 30            # per run; only NEW articles that look cut short
+  browser_max_pages: 15            # per run (all sources together); only NEW articles that look cut short
+  browser_time_budget_minutes: 2.5 # the browser stops opening pages after this
+  # GitHub stops a run at 12 minutes, about 2 of which are setup. The engine stops
+  # starting new work before this, carries the rest over and always sends its email.
+  time_budget_minutes: 8.5
   # Articles per extraction call. Bigger batches = fewer calls = less waiting and
   # lower quota use, at the cost of a longer prompt. 6 suits a 30-minute cadence.
   extraction_batch_size: 6        # (superseded: articles are now grouped by length)
