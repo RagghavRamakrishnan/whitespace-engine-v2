@@ -55,13 +55,28 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
                   cool_off_days=cfg["dispatch"].get("dedup_days", 180))
     stats = {"ingested": 0, "seen": 0, "articles_read": 0, "companies_found": 0,
              "signals": 0, "possible_misses": 0, "thin_body": 0, "quota_blocked": 0,
-             "gave_up": 0, "dead_sources": 0, "rechecked": 0,
+             "gave_up": 0, "too_old": 0, "dead_sources": 0, "rechecked": 0,
              "recovered_on_recheck": 0, "short_lists": 0, "dedup": 0, "gated": 0,
              "headcount": 0, "hc_verified": 0, "hc_unverified": 0, "ai_veto": 0,
              "review": 0, "enriched": 0, "alerted": 0}
 
     pending: list[tuple[Any, int, int, bool]] = []
+    alerted_this_run: set[str] = set()
     articles = ingest.collect(cfg, store)
+
+    # Only recent news. A funding story older than this is not a whitespace race any
+    # more — someone has already had weeks to claim the account.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    max_age = int(cfg["run"].get("max_article_age_days", 3))
+    cutoff = _dt.now(_tz.utc) - _td(days=max_age)
+    recent = []
+    for a in articles:
+        pub = a.published_at if a.published_at.tzinfo else a.published_at.replace(tzinfo=_tz.utc)
+        if pub < cutoff:
+            stats["too_old"] += 1
+            continue
+        recent.append(a)
+    articles = recent
     stats["ingested"] = len(articles)
     stats["browser_opened"] = ingest.FETCH_STATS["browser_opened"]
     stats["expanded"] = ingest.FETCH_STATS["expanded"]
@@ -171,6 +186,12 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
             continue
 
         # 2. dedup + 180-day cool-off
+        # Same company mentioned by two articles in THIS run: the database only records
+        # an alert once the email has gone out, so it cannot catch this on its own.
+        run_keys = {k for k in (sig.domain_key, sig.slug_key, sig.name_key) if k}
+        if run_keys & alerted_this_run:
+            stats["dedup"] += 1
+            continue
         state, _row = store.dedup_check(sig.domain_key, sig.slug_key, sig.name_key)
         if state == "cooloff":
             stats["dedup"] += 1
@@ -178,6 +199,7 @@ def process(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
                            sig.company_name, sig.url)
             continue
         is_follow_on = state == "follow_on"
+        alerted_this_run |= run_keys
 
         # 3. headcount. An UNVERIFIED number may never delete a prospect: a guess that
         #    said "small" is how a 367-person company reached the inbox, and a guess

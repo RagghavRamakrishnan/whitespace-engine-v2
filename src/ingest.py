@@ -56,6 +56,15 @@ LI_RE = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/company/[\w\-.]+", 
 
 
 # ------------------------------------------------------------------ helpers
+_POSSESSIVE_LEAD = re.compile(
+    r"^(?:India|Bengaluru|Bangalore|Mumbai|Delhi|Gurugram|Noida|Pune|Hyderabad|Chennai|"
+    r"Kolkata|Ahmedabad|Jaipur|Kochi)['\u2019]s\s+", re.I)
+# "background music startup Tringbox" -> "Tringbox"
+_DESCRIPTOR_LEAD = re.compile(
+    r"^(?:[\w\-]+\s+){0,4}?(?:startup|start-up|firm|company|platform|brand|maker|"
+    r"provider|player|venture|app)\s+(?=[A-Z0-9])", re.I)
+
+
 def _guess_company(title: str) -> str:
     """Pull the company name out of a funding headline.
 
@@ -64,7 +73,9 @@ def _guess_company(title: str) -> str:
     company name shown to the AE. Strip the scaffolding, then match up to the verb.
     """
     t = _LEAD_NOISE.sub("", title.strip())
+    t = _POSSESSIVE_LEAD.sub("", t)
     t = _LEAD_DESCRIPTOR.sub("", t).strip()
+    t = _DESCRIPTOR_LEAD.sub("", t).strip()
     m = COMPANY_RE.search(t)
     if m:
         return m.group(1).strip(" ,-–—")
@@ -313,25 +324,33 @@ def _expand_in_browser(sigs: list[RawSignal]) -> None:
             FETCH_STATS["expanded"] += 1
 
 
+def _entry_to_signal(source: dict[str, Any], e: Any, strip_publisher: bool = False) -> RawSignal:
+    published = datetime(*e.published_parsed[:6], tzinfo=timezone.utc) \
+        if getattr(e, "published_parsed", None) else datetime.now(timezone.utc)
+    title = getattr(e, "title", "") or ""
+    if strip_publisher:
+        # Google News appends " - Publisher"; strip it before company extraction.
+        title = re.sub(r"\s+-\s+[^-]{2,40}$", "", title)
+    # Feeds that carry the full article (Entrackr does) put it in `content`.
+    body = ""
+    for c in getattr(e, "content", None) or []:
+        v = c.get("value") if isinstance(c, dict) else getattr(c, "value", "")
+        if v and len(v) > len(body):
+            body = v
+    if not body:
+        body = getattr(e, "summary", "") or ""
+    body = re.sub(r"\s+", " ", re.sub("<[^<]+?>", " ", body)).strip()
+    return RawSignal(source_id=source["id"], title=title, url=getattr(e, "link", "") or "",
+                     published_at=published, body=body[:_MAX_ARTICLE_CHARS],
+                     company_name=_guess_company(title), signal_type="funding")
+
+
 def ingest_rss(source: dict[str, Any]) -> list[RawSignal]:
     feed = _parse_feed(source["url"])
-    raw: list[RawSignal] = []
-    for e in feed.entries[:40]:
-        published = datetime(*e.published_parsed[:6], tzinfo=timezone.utc) \
-            if getattr(e, "published_parsed", None) else datetime.now(timezone.utc)
-        sig = RawSignal(
-            source_id=source["id"],
-            title=getattr(e, "title", ""),
-            url=getattr(e, "link", ""),
-            published_at=published,
-            body=re.sub("<[^<]+?>", " ", getattr(e, "summary", ""))[:4000],
-            company_name=_guess_company(getattr(e, "title", "")),
-            signal_type="funding",
-        )
-        enriched = _enrich_from_article(sig)
-        out.append(enriched)
-        # A roundup article names several companies; each becomes its own signal.
-    return out
+    sigs = [_entry_to_signal(source, e) for e in feed.entries[:60]]
+    # Download (only new articles), then open any that still look cut short in the
+    # browser and click "read more".
+    return _enrich_many(sigs)
 
 
 def ingest_html_list(source: dict[str, Any]) -> list[RawSignal]:
@@ -360,46 +379,31 @@ def ingest_html_list(source: dict[str, Any]) -> list[RawSignal]:
 
 
 def ingest_google_news(source: dict[str, Any]) -> list[RawSignal]:
-    """Google News RSS — free, keyless, unlimited, and fast.
+    """Google News search feeds — free, keyless, and they reach publishers whose own
+    feeds are closed or blocked (VCCircle, Moneycontrol) via `site:` queries.
 
-    Covers the ground X would cover for most purposes: when a founder announces a
-    round on X or LinkedIn, Indian tech media picks it up within minutes to hours and
-    Google News indexes it immediately. Not first-by-seconds like the X firehose, but
-    the X API has had no free tier since February 2026 and bills per post returned.
-
-    Each query becomes its own feed, so add or remove angles freely.
+    Google News links redirect to the publisher with JavaScript, which a plain
+    download cannot follow; those articles are opened in the browser instead.
     """
-    out: list[RawSignal] = []
+    days = int(source.get("max_age_days", 3))
+    seen_links: set[str] = set()
+    sigs: list[RawSignal] = []
     for query in source.get("queries", []):
-        batch: list[RawSignal] = []
-        url = ("https://news.google.com/rss/search?q="
-               + requests.utils.quote(query)
-               + f"&hl={source.get('lang', 'en-IN')}"
-                 f"&gl={source.get('country', 'IN')}"
-                 f"&ceid={source.get('country', 'IN')}:{source.get('lang', 'en-IN')[:2]}")
+        q = query if "when:" in query else f"{query} when:{days}d"
+        url = ("https://news.google.com/rss/search?q=" + requests.utils.quote(q)
+               + f"&hl={source.get('lang', 'en-IN')}&gl={source.get('country', 'IN')}"
+               + f"&ceid={source.get('country', 'IN')}:{source.get('lang', 'en-IN')[:2]}")
         try:
             feed = _parse_feed(url)
         except Exception as exc:                                # noqa: BLE001
             log.warning("google news query failed (%s): %s", query, exc)
             continue
-        for e in feed.entries[:25]:
-            published = datetime(*e.published_parsed[:6], tzinfo=timezone.utc) \
-                if getattr(e, "published_parsed", None) else datetime.now(timezone.utc)
-            title = getattr(e, "title", "")
-            # Google News appends " - Publisher"; strip it before company extraction.
-            clean_title = re.sub(r"\s+-\s+[^-]{2,40}$", "", title)
-            sig = RawSignal(
-                source_id=source["id"],
-                title=clean_title,
-                url=getattr(e, "link", ""),
-                published_at=published,
-                body=re.sub("<[^<]+?>", " ", getattr(e, "summary", ""))[:4000],
-                company_name=_guess_company(clean_title),
-                signal_type="funding",
-            )
-            enriched = _enrich_from_article(sig)
-            out.append(enriched)
-        return out
+        for e in feed.entries[:30]:
+            sig = _entry_to_signal(source, e, strip_publisher=True)
+            if sig.url and sig.url not in seen_links:
+                seen_links.add(sig.url)
+                sigs.append(sig)
+    return _enrich_many(sigs)
 
 
 def ingest_mca(source: dict[str, Any]) -> list[RawSignal]:

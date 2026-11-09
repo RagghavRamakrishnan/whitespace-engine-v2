@@ -37,8 +37,11 @@ round size, and disqualify when that estimate exceeds 50.
 "in talks to raise", a past round being recapped, or an acquisition.
 - The named entity is really a headline fragment or a publisher's own name.
 
-When in doubt, DISQUALIFY. A missed prospect costs far less than a wrong alert; the AE \
-loses trust in the system after two or three bad emails.
+Disqualify ONLY when one of the reasons above is clearly true. A short or \
+sparse article is NEVER a reason to disqualify — many real funding stories are a \
+few lines long, and missing details (website, founders, team size) are filled in \
+later or left blank. If the company received funding and none of the reasons above \
+clearly applies, set disqualify to false.
 
 Set `is_india_based` using the >60% test above — true for a foreign-HQ company whose team \
 is mostly in India. `estimated_headcount` has ONE specific definition here: **the number that would appear \
