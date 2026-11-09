@@ -65,6 +65,8 @@ sources:
   #    practical substitute for X monitoring: when a founder announces on X or
   #    LinkedIn, Indian tech media covers it fast and this picks that up. Each query
   #    is its own feed — add angles freely, they cost nothing.
+    enabled: false                  # mostly gadget news; used up AI requests on no funding stories
+
   - id: google_news
     type: google_news
     interval_minutes: 15
@@ -275,10 +277,10 @@ llm:
   # between calls lengthens the run, and GitHub Actions bills per minute started.
   # Flash-class models generally allow 10-15/min. If the logs show 429 / quota
   # errors, lower this to 5. If runs are billing 2+ minutes, raise it.
-  max_requests_per_minute: 8       # free limit is 10; kept below it for safety
+  max_requests_per_minute: 9       # free limit is 10
   # Hard stop per run, so one busy day cannot burn the daily allowance in a single
   # run and leave the rest of the day blind. Deferred articles are retried next run.
-  max_llm_calls_per_run: 15
+  max_llm_calls_per_run: 30       # 15-min runs; daily free allowance is 500
 
 # --------------------------------------------------------------- 5. DISPATCH
 dispatch:
