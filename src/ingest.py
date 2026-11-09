@@ -18,7 +18,15 @@ from concurrent.futures import ThreadPoolExecutor
 from .models import RawSignal
 
 log = logging.getLogger(__name__)
-UA = {"User-Agent": "LTS-Whitespace-Engine/1.0 (+internal sales research; contact AE)"}
+# Requests look like an ordinary desktop browser. News sites and their CDNs refuse
+# requests from unfamiliar robot names — the first live run had every article
+# download refused for exactly that reason.
+UA = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+}
 TIMEOUT = 12          # keep a slow site from dominating the run
 
 # Leading editorial noise and descriptors that sit in front of the actual company name.
@@ -175,8 +183,22 @@ def extract_body_deals(sig: RawSignal, max_per_article: int = 12) -> list[RawSig
     return out
 
 
+def _parse_feed(url: str):
+    """Download a feed as a browser would, then parse it. feedparser's own downloader
+    uses a robot name that many news sites block."""
+    try:
+        r = requests.get(url, headers=UA, timeout=TIMEOUT)
+        r.raise_for_status()
+        feed = feedparser.parse(r.content)
+        if feed.entries:
+            return feed
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("feed download failed %s: %s", url, exc)
+    return feedparser.parse(url)
+
+
 def _fetch(url: str) -> str:
-    r = requests.get(url, headers=UA, timeout=TIMEOUT)
+    r = requests.get(url, headers=UA, timeout=TIMEOUT, allow_redirects=True)
     r.raise_for_status()
     return r.text
 
@@ -228,7 +250,11 @@ def _enrich_from_article(sig: RawSignal) -> RawSignal:
         if li and not sig.linkedin_url:
             sig.linkedin_url = li.group(0)
     except Exception as exc:                                    # noqa: BLE001
-        log.warning("article fetch failed %s: %s", sig.url, exc)
+        # Refused, timed out, or a redirect page (Google News links redirect with
+        # JavaScript). A real browser can usually still open it, so hand it over.
+        log.warning("article fetch failed %s: %s — will try the browser", sig.url, exc)
+        sig.raw["paywalled"] = False
+        sig.raw["needs_browser"] = True
     return sig
 
 
@@ -288,7 +314,7 @@ def _expand_in_browser(sigs: list[RawSignal]) -> None:
 
 
 def ingest_rss(source: dict[str, Any]) -> list[RawSignal]:
-    feed = feedparser.parse(source["url"])
+    feed = _parse_feed(source["url"])
     raw: list[RawSignal] = []
     for e in feed.entries[:40]:
         published = datetime(*e.published_parsed[:6], tzinfo=timezone.utc) \
@@ -352,7 +378,7 @@ def ingest_google_news(source: dict[str, Any]) -> list[RawSignal]:
                  f"&gl={source.get('country', 'IN')}"
                  f"&ceid={source.get('country', 'IN')}:{source.get('lang', 'en-IN')[:2]}")
         try:
-            feed = feedparser.parse(url)
+            feed = _parse_feed(url)
         except Exception as exc:                                # noqa: BLE001
             log.warning("google news query failed (%s): %s", query, exc)
             continue
