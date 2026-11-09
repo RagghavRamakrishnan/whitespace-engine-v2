@@ -1,0 +1,17 @@
+requests>=2.32
+feedparser>=6.0
+beautifulsoup4>=4.12
+trafilatura>=1.12      # isolates the article text from page clutter
+playwright>=1.47       # headless browser for "read more" pages
+PyYAML>=6.0
+jsonschema>=4.22
+google-genai>=1.0        # Gemini (current SDK; google-generativeai is deprecated)
+
+# optional alternative providers
+# openai>=1.40           # also covers Groq (OpenAI-compatible endpoint)
+# anthropic>=0.34
+# google-api-python-client>=2.140   # live Google Sheets tracker
+# google-auth>=2.33
+
+# dev
+pytest>=8.0

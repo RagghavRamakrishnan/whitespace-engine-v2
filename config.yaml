@@ -1,0 +1,293 @@
+# LTS Whitespace Alert Engine — single source of truth for tunables.
+# Change gates and source lists HERE, not in code.
+
+run:
+  timezone: Asia/Kolkata
+  dry_run: false
+  # RECALL FIRST. An LLM reads every article that could be about money and lists the
+  # companies that raised — the same job the AE does by hand. The regex net runs
+  # alongside and the union is used, so a company is only lost if BOTH missed it.
+  # Turning this off drops back to regex alone and WILL miss companies.
+  llm_extraction: true
+  # When a downloaded article still looks cut short, open it in a real browser, click
+  # every "read more" / "show more" / "continue reading", scroll, and read it again.
+  # Never clicks subscribe/login/payment controls — paywalls are reported, not bypassed.
+  browser_expand: true
+  browser_max_pages: 30            # per run; only NEW articles that look cut short
+  # Articles per extraction call. Bigger batches = fewer calls = less waiting and
+  # lower quota use, at the cost of a longer prompt. 6 suits a 30-minute cadence.
+  extraction_batch_size: 6        # (superseded: articles are now grouped by length)
+  # An article that fails to read is retried on later runs rather than lost. After
+  # this many attempts it is given up on and surfaced in the review queue.
+  max_read_attempts: 4
+  # Warn when a source has returned nothing for this many consecutive runs. At 15-min
+  # polling, 20 runs is about five hours — long enough to ignore a blip, short enough
+  # to catch a feed that has moved.
+  dead_source_runs: 20
+
+  # Cost guard. A single weekly roundup can yield 8-12 qualifying companies at once,
+  # so this needs headroom above a normal day's volume.
+  max_enrichments_per_run: 40
+  # Companies extracted from one article body (roundup explosion). Raise if you find
+  # long roundups being truncated; each one costs an AI call only if it passes gates.
+  max_deals_per_article: 40
+
+# ---------------------------------------------------------------- 1. INGESTION
+sources:
+  # -- Tech media (RSS, cheapest and most reliable stream)
+  - id: entrackr
+    type: rss
+    url: https://entrackr.com/feed/
+    interval_minutes: 15
+  - id: inc42
+    type: rss
+    url: https://inc42.com/feed/
+    interval_minutes: 15
+  - id: yourstory
+    type: rss
+    url: https://yourstory.com/feed
+    interval_minutes: 15
+  - id: vccircle
+    type: rss
+    url: https://www.vccircle.com/rss/news
+    interval_minutes: 15
+  - id: livemint_tech
+    type: rss
+    url: https://www.livemint.com/rss/technology
+    interval_minutes: 15
+
+  # -- Google News RSS. Free, keyless, unlimited, indexed within minutes. This is the
+  #    practical substitute for X monitoring: when a founder announces on X or
+  #    LinkedIn, Indian tech media covers it fast and this picks that up. Each query
+  #    is its own feed — add angles freely, they cost nothing.
+  - id: google_news
+    type: google_news
+    interval_minutes: 15
+    country: IN
+    lang: en-IN
+    queries:
+      - '"raises" (seed OR "pre-seed" OR "pre-series A") India startup'
+      - '"raises" India startup (AI OR SaaS OR deeptech OR robotics)'
+      - 'India startup "seed round" funding Bengaluru OR Mumbai OR Pune OR Hyderabad'
+      - 'India startup "emerges from stealth" OR "comes out of stealth"'
+      - 'India startup funding "led by" (Blume OR Accel OR "Peak XV" OR Elevation OR Antler OR "Prime Venture")'
+
+  # -- More free India tech RSS. Costs nothing to add; dedup handles the overlap.
+  - id: moneycontrol_startup
+    type: rss
+    url: https://www.moneycontrol.com/rss/startups.xml
+    interval_minutes: 15
+  - id: ettech
+    type: rss
+    url: https://economictimes.indiatimes.com/tech/rssfeeds/13357270.cms
+    interval_minutes: 15
+
+  # -- Regulatory: MCA PAS-3 return-of-allotment. 1-3 weeks ahead of press.
+  #    Requires a paid/manual pull; adapter posts to the same RawSignal shape.
+  - id: mca_pas3
+    type: mca
+    interval_minutes: 60
+    # OFF because there is no free/open MCA bulk API. The adapter is written and reads
+    # a JSON file at MCA_FEED_PATH, so if you ever get filings data (licensed vendor or
+    # an authorised export) drop it there and flip this to true.
+    enabled: false
+
+  # -- Grants & innovation portals (awardee lists, HTML tables)
+  - id: idex
+    type: html_list
+    # OFF: the CSS selector below is an UNVERIFIED guess. A wrong selector returns
+    # zero rows forever, silently — worse than not running at all. Run
+    # `python -m src.run --check-sources`, fix the selector until it reports items,
+    # then set enabled: true.
+    enabled: false
+    url: https://idex.gov.in/winners
+    row_selector: "table tr"
+    interval_minutes: 1440
+  - id: birac
+    type: html_list
+    # OFF: the CSS selector below is an UNVERIFIED guess. A wrong selector returns
+    # zero rows forever, silently — worse than not running at all. Run
+    # `python -m src.run --check-sources`, fix the selector until it reports items,
+    # then set enabled: true.
+    enabled: false
+    url: https://birac.nic.in/beneficiary.php
+    row_selector: "table tr"
+    interval_minutes: 1440
+  - id: tdb
+    type: html_list
+    # OFF: the CSS selector below is an UNVERIFIED guess. A wrong selector returns
+    # zero rows forever, silently — worse than not running at all. Run
+    # `python -m src.run --check-sources`, fix the selector until it reports items,
+    # then set enabled: true.
+    enabled: false
+    url: https://tdb.gov.in/projects/
+    row_selector: ".project-item"
+    interval_minutes: 1440
+
+  # -- Accelerators & demo days
+  - id: yc_india
+    type: html_list
+    # OFF: the CSS selector below is an UNVERIFIED guess. A wrong selector returns
+    # zero rows forever, silently — worse than not running at all. Run
+    # `python -m src.run --check-sources`, fix the selector until it reports items,
+    # then set enabled: true.
+    enabled: false
+    url: https://www.ycombinator.com/companies?regions=India
+    row_selector: "a._company_i9oky_355"
+    interval_minutes: 1440
+  - id: antler_india
+    type: html_list
+    # OFF: the CSS selector below is an UNVERIFIED guess. A wrong selector returns
+    # zero rows forever, silently — worse than not running at all. Run
+    # `python -m src.run --check-sources`, fix the selector until it reports items,
+    # then set enabled: true.
+    enabled: false
+    url: https://www.antler.co/portfolio
+    row_selector: ".portfolio-item"
+    interval_minutes: 1440
+
+  # -- Social keyword monitoring (X API v2 recent search)
+  - id: x_social
+    type: x_search
+    query: >-
+      ("stealth" OR "backed by" OR "pre-seed" OR "seed round")
+      ("Bengaluru" OR "Bangalore" OR "Delhi" OR "Mumbai" OR "Hyderabad"
+       OR "Chennai" OR "Pune" OR "India") -is:retweet lang:en
+    interval_minutes: 120
+    # OFF because X discontinued free API access in Feb 2026 and now bills per POST
+    # RETURNED ($0.005 each), not per call. A 20-result search costs $0.10, so every
+    # 30 min is ~$144/month and every 2 hours is ~$36/month.
+    # The google_news source above covers most of this signal for nothing.
+    # To enable: set X_BEARER_TOKEN, flip this to true, and watch the interval.
+    enabled: false
+
+# --------------------------------------------------------------- 2. HARD GATES
+gates:
+  headcount:
+    min: 1
+    max: 50                         # strict. 51+ is disqualified, no exceptions.
+    # Applied only to accounts whose headcount could NOT be confirmed. Keeps the
+    # "check this one" list plausible instead of letting wild misses through.
+    unconfirmed_ceiling: 80
+    # LinkedIn's size band is SELF-REPORTED from a dropdown and is very often stale or
+    # aspirational — a 30-person company showing "51-200" is routine. So a band only
+    # disqualifies when its LOWER bound reaches this, a magnitude optimism cannot
+    # explain. Bands like "51-200" are surfaced for a manual check, never dropped.
+    band_disqualify_floor: 201
+    # Cumulative capital is a WEAK proxy for headcount in this ICP: a DeepTech or AI
+    # company can raise $25-75M with 30 engineers. Set high so it only catches the
+    # obviously-scaled, and never quietly kills a well-funded small team. 0 disables.
+    max_total_raised_usd: 150000000
+  india:
+    # A foreign HQ is fine: US/Singapore-incorporated flips with the team in India are
+    # in the ICP. Keyword rules cannot measure this, so the AI applies the percentage.
+    min_india_headcount_pct: 60
+    hub_cities:
+      [Bengaluru, Bangalore, Delhi, NCR, Gurugram, Gurgaon, Noida, Mumbai,
+       Pune, Hyderabad, Chennai, Ahmedabad, Kolkata, Jaipur, Kochi, Indore]
+  icp:
+    accepted_verticals:
+      deeptech:      [robotics, semiconductor, chip, spacetech, space, quantum, drone, photonics, defence tech, embedded]
+      enterprise_saas: [b2b saas, saas, enterprise software, devtools, api platform, fintech infrastructure, cybersecurity]
+      ai_ml:         [artificial intelligence, machine learning, genai, llm, computer vision, nlp, ai agents]
+      health:        [medtech, biotech, healthtech, diagnostics, drug discovery, medical devices]
+      climate:       [climatetech, cleantech, advanced materials, battery, ev tech, solar, carbon]
+      consumer_tech: [d2c, consumer tech, consumer internet, marketplace, edtech, gaming]
+    disqualified_keywords:
+      [plumbing, electrician, electrical maintenance, housekeeping, manpower supply,
+       security guard, staffing agency, delivery fleet, driver partner, blue-collar,
+       facility management, labour contractor, courier, logistics manpower]
+  capital:
+    accepted_round_types:
+      [pre-seed, seed, angel, pre-series a, series a, bridge, grant, accelerator, debt, extension]
+
+# ------------------------------------------------- 3. HEADCOUNT VERIFICATION
+verification:
+  # estimate = free, inferred from the article + funding stage. The digest email puts a
+  #            "confirm on LinkedIn" link next to every estimated number — a 10-second
+  #            human check is more accurate than any free data source for Indian SMBs.
+  # pdl      = People Data Labs company enrichment. Free tier ~100 lookups/month;
+  #            weakest on exactly this segment (small, non-US). Set PDL_API_KEY.
+  # manual   = queue everything for human verification, alert nothing automatically.
+  # diffbot  = best genuinely free tier: ~10,000 credits/month, full API access,
+  #            5 calls/min (this engine needs ~300/month). Set DIFFBOT_TOKEN.
+  # The target number is the count shown on the company's LinkedIn people page — not
+  # "true" headcount.
+  #
+  # The two free tiers differ by 100x, so they are used for different jobs:
+  # Providers run as an ordered chain. Each later step only fires when the earlier
+  # ones left the decision genuinely open, so the scarce free tiers are spent where
+  # they change the answer rather than on routine lookups.
+  #
+  #   google_cse  ~3,000/mo  always       LinkedIn's own published size band, read out
+  #                                       of GOOGLE's index via Google's official API.
+  #                                       Not a scrape of LinkedIn; no terms bypassed.
+  #   diffbot    ~10,000/mo  miss or      General web crawl. Resolves the cases Google
+  #                          ambiguous    left open — no result, a "51-200" style
+  #                                       self-reported band, or a borderline number.
+  #   pdl           ~100/mo  miss only    Last resort, when neither of the above knew
+  #                                       anything at all. Capped monthly.
+  #
+  # A counted figure always beats a self-reported band. Real traffic is ~300-600
+  # lookups/month, so every tier stays comfortably inside its free allowance.
+  chain:
+    - name: google_cse
+    - name: diffbot
+      when: miss_or_borderline
+    - name: pdl
+      when: miss_only
+      monthly_cap: 90
+  tiebreak_band: [40, 70]           # a primary result in this range counts as borderline
+  tiebreaker_monthly_cap: 90        # stay inside PDL's ~100/month free tier
+  reserve_tiebreaker: true          # once 80% spent, save the rest for borderline cases
+  fallback_to_estimate: true        # a provider miss must not lose the account
+  partner_api:
+    base_url: ""                    # any other licensed firmographic API
+    api_key_env: PARTNER_API_KEY
+  min_confidence: 0.5               # below this -> needs_review, never auto-dropped
+
+# ------------------------------------------------------------------ 4. AI
+llm:
+  provider: google                  # google | groq | openai | anthropic
+  # Gemini 3.5 Flash-Lite. Chosen for its FREE DAILY ALLOWANCE, which is the
+  # constraint that matters for an always-on job:
+  #   gemini-3.6-flash / 3.8-flash : 5 requests/min,  20 requests/DAY  (far too few)
+  #   gemini-3.5-flash-lite        : 10 requests/min, 500 requests/DAY
+  # This engine needs roughly 80-150 requests a day. Allowances reset at midnight
+  # US Pacific time (13:30 IST). If Google retires this model, the error message
+  # names the replacement — change this one line.
+  model: gemini-3.5-flash-lite
+  temperature: 0.3
+  max_retries: 2                    # on schema-validation failure
+  # Free tiers cap requests per MINUTE as well as per day, and calls are spaced to
+  # stay under it. This number is a BALANCE, not just a safety margin: waiting
+  # between calls lengthens the run, and GitHub Actions bills per minute started.
+  # Flash-class models generally allow 10-15/min. If the logs show 429 / quota
+  # errors, lower this to 5. If runs are billing 2+ minutes, raise it.
+  max_requests_per_minute: 8       # free limit is 10; kept below it for safety
+  # Hard stop per run, so one busy day cannot burn the daily allowance in a single
+  # run and leave the rest of the day blind. Deferred articles are retried next run.
+  max_llm_calls_per_run: 15
+
+# --------------------------------------------------------------- 5. DISPATCH
+dispatch:
+  email:
+    to: ""                           # set via the ALERT_TO secret — never commit an address to a public repo
+    from_name: Whitespace Engine
+    smtp_host: smtp.gmail.com          # sending mailbox; credentials come from secrets
+    smtp_port: 587
+    format: html                       # html | text
+  tracker:
+    # Off: in a public repo a committed tracker would publish your prospect list.
+    # The digest email is the record.
+    enabled: false
+    csv_path: master_tracker.csv       # opens in Excel; committed back by the workflow
+  heartbeat:
+    enabled: true
+    quiet_hours: 6                     # after this long with no email, send "all quiet"
+  dedup_days: 180
+
+storage:
+  backend: sqlite                   # sqlite | postgres
+  sqlite_path: ./whitespace.db
+  postgres_dsn_env: SUPABASE_DSN

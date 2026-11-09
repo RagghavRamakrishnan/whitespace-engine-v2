@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WhitespaceEnrichment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "disqualify",
+    "disqualify_reason",
+    "company_name",
+    "website",
+    "linkedin_url",
+    "india_city",
+    "industry_icp",
+    "funding_amount",
+    "round_type",
+    "decision_makers",
+    "bottleneck",
+    "expansion_trigger",
+    "recommended_package",
+    "positioning",
+    "inmail_hook",
+    "confidence",
+    "data_conflicts",
+    "estimated_headcount",
+    "is_india_based"
+  ],
+  "properties": {
+    "disqualify": {
+      "type": "boolean",
+      "description": "true if this is NOT a valid prospect: not an operating company (a fund, publisher, government body), not India-based, clearly far more than 50 employees, or not a real new funding event."
+    },
+    "disqualify_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Short plain reason when disqualify is true; null otherwise."
+    },
+    "estimated_headcount": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Number of people who would show as associated members on the company's LinkedIn page \u2014 NOT true headcount. Exclude gig/frontline workers (riders, drivers, pickers, floor staff) who are largely absent from LinkedIn; include salaried corporate, engineering, ops and sales staff. null if genuinely unknown."
+    },
+    "is_india_based": {
+      "type": "boolean",
+      "description": "true only if the company has an Indian entity or the majority of its team in India."
+    },
+    "company_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "website": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Clean corporate URL, no tracking params"
+    },
+    "linkedin_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "linkedin.com/company/<slug>; null if not in source"
+    },
+    "india_city": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Primary India talent/engineering hub"
+    },
+    "industry_icp": {
+      "type": "string",
+      "enum": [
+        "DeepTech",
+        "Enterprise B2B SaaS",
+        "AI/ML",
+        "MedTech/BioTech/HealthTech",
+        "ClimateTech/Advanced Materials",
+        "D2C/Consumer Tech",
+        "Unclassified"
+      ]
+    },
+    "funding_amount": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "As stated, e.g. '$2.4M' or 'INR 18 Cr'"
+    },
+    "round_type": {
+      "type": "string",
+      "enum": [
+        "Pre-Seed",
+        "Seed",
+        "Angel",
+        "Pre-Series A",
+        "Series A",
+        "Bridge",
+        "Grant",
+        "Accelerator",
+        "Debt",
+        "Extension",
+        "Undisclosed"
+      ]
+    },
+    "decision_makers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "title",
+          "linkedin_url"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "linkedin_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Verbatim from source or null \u2014 never constructed"
+          }
+        }
+      }
+    },
+    "bottleneck": {
+      "type": "string",
+      "description": "Specific talent friction, role + scarcity + city Empty string when disqualify is true."
+    },
+    "expansion_trigger": {
+      "type": "string",
+      "description": "Secondary signal anchoring the outreach, or the inferred stage driver"
+    },
+    "recommended_package": {
+      "type": "string",
+      "enum": [
+        "Recruiter Corporate",
+        "Recruiter Professional",
+        "Job Slots",
+        "Career Pages / Life Pages"
+      ]
+    },
+    "positioning": {
+      "type": "string",
+      "description": "Why this package solves their post-funding headcount goal"
+    },
+    "inmail_hook": {
+      "type": "string",
+      "maxLength": 420,
+      "description": "Exactly two sentences, ends on a question"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "data_conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Contradictions between source text and pipeline-verified facts"
+    }
+  }
+}
