@@ -181,6 +181,33 @@
         "type": "string"
       },
       "description": "Contradictions between source text and pipeline-verified facts"
+    },
+    "hq_location": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "City and country of HQ"
+    },
+    "india_evidence": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Words from the article tying the company to India"
+    },
+    "india_presence": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "yes",
+        "no",
+        "unknown",
+        null
+      ],
+      "description": "yes = India link shown; no = source explicitly says no India team, or well-known no India ops; unknown = otherwise"
     }
   }
 }
