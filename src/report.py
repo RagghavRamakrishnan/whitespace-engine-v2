@@ -131,6 +131,26 @@ class RunReport:
         self.gn_error = ""
         self.india_unknown: list[tuple[str, str, str, str]] = []  # name, hq, source, url
         self.carried_over: list[str] = []
+        self.section_pages: list[str] = []   # home/section pages skipped (not stories)
+        # Articles that downloaded but held only headlines / one-line mentions, so the
+        # AI had no real story to judge companies from. url -> [title, companies hit]
+        self.headline_only: dict[str, list] = {}
+        # Short summaries of earlier runs that sent no email (newest last).
+        self.quiet_runs: list[dict[str, Any]] = []
+
+    def note_headline_only(self, url: str, title: str) -> None:
+        entry = self.headline_only.setdefault(url or "?", [title or "untitled", 0])
+        entry[1] += 1
+
+    def quiet_summary(self, stats: dict[str, Any], head: str) -> dict[str, Any]:
+        """What this run did, in a few words — kept until the next email goes out."""
+        when = (self.finished or self.started).astimezone(IST).strftime("%a %d %b, %I:%M %p")
+        return {"when": when, "new_read": max(stats.get("articles_read", 0)
+                                              - stats.get("quota_blocked", 0), 0),
+                "found": stats.get("companies_found", 0),
+                "already": self.already_sent[:10],
+                "rejected": [f"{c} ({r[:70]})" for c, r in self.rejected[:10]],
+                "n_rejected": len(self.rejected), "head": head}
 
     def reject(self, company: str, stage: str, reason: str) -> None:
         if not company:
@@ -191,8 +211,26 @@ def _checks(rep: RunReport, stats: dict[str, Any],
         out.append((lvl, f"{thin} of {read} articles only partly downloaded",
                     "The engine saw only the summary, so a company named lower down "
                     f"could be missed. They are retried automatically next run.{ex}"))
-    elif read:
+    elif read and not rep.headline_only:
         out.append((OK, f"All {read} funding-related articles downloaded in full", ""))
+    if read and rep.headline_only:
+        n = len(rep.headline_only)
+        title, hits = max(rep.headline_only.values(), key=lambda v: v[1])
+        out.append((WATCH, f"{n} of {read} article(s) downloaded, but held only headlines "
+                           f"— not a real story",
+                    f"The page opened, but the AI found just one-line mentions with no "
+                    f"funding details, so companies from it can't be judged properly. "
+                    f"Example: “{title[:90]}” ({hits} compan{'y' if hits == 1 else 'ies'} "
+                    f"affected). If you see this often from the same site, tell me."))
+
+    if rep.section_pages:
+        n = len(rep.section_pages)
+        out.append((INFO, f"Skipped {n} link{'s' if n > 1 else ''} that went to a website's "
+                          f"home or section page, not a story",
+                    f"e.g. {_site(rep.section_pages[0])}"
+                    f"{'/' + rep.section_pages[0].split('/', 3)[3] if rep.section_pages[0].count('/') >= 3 else ''}"
+                    f" — these list old headlines. If you see a real funding story here, "
+                    f"tell me."))
 
     # 2b. Google News links turned into the real article link?
     tried, ok = stats.get("gn_tried", 0), stats.get("gn_decoded", 0)
@@ -377,6 +415,32 @@ def has_problem(rep: RunReport | None, stats: dict[str, Any],
 
 
 # ------------------------------------------------------------------ rendering
+def _quiet_lines(rep: RunReport) -> list[str]:
+    """One plain line per earlier run that did not email, newest first."""
+    out = []
+    # Runs with no new articles and no issues are just counted, not listed one by one.
+    idle = [q for q in rep.quiet_runs if not q["new_read"] and q["head"].startswith("✅")]
+    busy = [q for q in rep.quiet_runs if q not in idle]
+    if idle:
+        out.append(f"{len(idle)} run{'s' if len(idle) > 1 else ''} had no new funding "
+                   f"articles to read — all checks normal.")
+    for q in reversed(busy[-12:]):
+        bits = [f"read {q['new_read']} new article{'s' if q['new_read'] != 1 else ''}"]
+        if q["new_read"]:
+            bits.append(f"found {q['found']} compan{'y' if q['found'] == 1 else 'ies'}")
+        if q["already"]:
+            bits.append("already sent: " + ", ".join(q["already"]))
+        if q["rejected"]:
+            more = q["n_rejected"] - len(q["rejected"])
+            bits.append("rejected: " + ", ".join(q["rejected"])
+                        + (f" +{more} more" if more > 0 else ""))
+        out.append(f"{q['when']} — " + "; ".join(bits) + f". {q['head']}")
+    older = len(busy) - 12
+    if older > 0:
+        out.append(f"… and {older} earlier quiet run{'s' if older > 1 else ''}.")
+    return out
+
+
 def render_text(rep: RunReport | None, stats: dict[str, Any],
                 dead: list[dict[str, Any]] | None = None) -> str:
     if rep is None:
@@ -409,6 +473,9 @@ def render_text(rep: RunReport | None, stats: dict[str, Any],
             L.append(f"  - Not India-based ({len(foreign)}): " + ", ".join(foreign))
     if rep.already_sent:
         L += ["", "ALREADY SENT EARLIER (skipped): " + ", ".join(rep.already_sent[:20])]
+    if rep.quiet_runs:
+        L += ["", f"RUNS SINCE YOUR LAST EMAIL ({len(rep.quiet_runs)} — nothing new to send)"]
+        L += ["  " + x for x in _quiet_lines(rep)]
     return "\n".join(L)
 
 
@@ -464,6 +531,12 @@ def render_html(rep: RunReport | None, stats: dict[str, Any],
     if rep.already_sent:
         h.append("<p><b>Already sent earlier (skipped):</b> "
                  f"{e(', '.join(rep.already_sent[:20]))}</p>")
+    if rep.quiet_runs:
+        h.append(f"<b>Runs since your last email</b> <span style='color:#57606a'>— "
+                 f"{len(rep.quiet_runs)} run{'s' if len(rep.quiet_runs) > 1 else ''} with "
+                 f"nothing new to send</span><ul style='margin:4px 0 10px'>")
+        h += [f"<li>{e(x)}</li>" for x in _quiet_lines(rep)]
+        h.append("</ul>")
     h.append("</div>")
     return "".join(h)
 

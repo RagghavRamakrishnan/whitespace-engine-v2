@@ -197,6 +197,8 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                     log.info("not rejecting %s — article could not be read (%s)",
                              sig.company_name, reason[:80])
                     unreadable = True
+                    sig.raw = sig.raw or {}
+                    sig.raw["ai_unreadable"] = True     # for the Run Details download check
                     data["disqualify"] = False
                     if not data.get("bottleneck"):
                         data["bottleneck"] = ("The article could not be read in full — "

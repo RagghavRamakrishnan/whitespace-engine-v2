@@ -192,7 +192,7 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
                 html = page.content()
                 text = extract(html)
                 results[url] = {"text": text, "clicked": clicked,
-                                "paywalled": is_paywalled(text)}
+                                "paywalled": is_paywalled(text), "final_url": page.url}
             except Exception as exc:                        # noqa: BLE001
                 log.warning("browser read failed %s: %s", url, exc)
         browser.close()

@@ -319,6 +319,39 @@ def _decode_google_news(url: str) -> str:
         return ""
 
 
+# A link to a website's home or section page ("vccircle.com/india") instead of a story.
+# Such a page lists weeks of old headlines, and reading it once produced 9 stale alerts.
+_SECTION_WORDS = {"tag", "tags", "category", "categories", "topic", "topics", "author",
+                  "section", "page", "news", "latest", "home", "index"}
+_ARTICLE_SEG = re.compile(r"^[^-]+-[^-]+-|\d{4,}|\.(?:html?|cms|ece|php|aspx?)$", re.I)
+_DEAL_WORD = re.compile(r"\b(?:rais|secur|bag|nets?\b|netted|lands?\b|landed|picks? up|"
+                        r"picked up|clos|leads?\b|led\b|backs?\b|backed|invest|funded|"
+                        r"acquir|grant|award|seed|series [a-e]\b|pre-seed|\$|rs\.?\s?\d|₹|"
+                        r"crore|million|mn\b)", re.I)
+
+
+def is_section_page(url: str, title: str) -> bool:
+    """True only when BOTH the link looks like a home/section page AND the headline
+    names no deal — so a real story with an odd short link is never skipped."""
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(url or "")
+    except ValueError:
+        return False
+    if not u.netloc or "news.google." in u.netloc:
+        return False
+    if re.search(r"(?:^|&)(?:p|id|story|article)=\d", u.query or ""):
+        return False
+    segs = [s for s in (u.path or "").strip("/").split("/") if s]
+    if any(_ARTICLE_SEG.search(s) for s in segs):
+        return False
+    if len(segs) > 3 or (segs and not all(s.lower() in _SECTION_WORDS or
+                                          re.fullmatch(r"[a-z]{2,20}", s.lower())
+                                          for s in segs)):
+        return False
+    return not _DEAL_WORD.search(title or "")
+
+
 def _enrich_from_article(sig: RawSignal) -> RawSignal:
     """Download the full article and keep all of its text.
     A failure here never kills the signal; the reader flags it as an incomplete read."""
@@ -418,6 +451,9 @@ def _expand_in_browser(sigs: list[RawSignal]) -> None:
         if not r:
             continue
         FETCH_STATS["browser_opened"] += 1
+        final = r.get("final_url") or ""
+        if final.startswith("http") and "google." not in final:
+            s.raw["publisher_url"] = final      # where the link really led
         if r["paywalled"]:
             s.raw["paywalled"] = True
         if r["text"] and len(r["text"]) > len(s.body or ""):

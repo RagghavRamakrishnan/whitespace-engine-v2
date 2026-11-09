@@ -19,7 +19,7 @@ from .db import Store
 from .dispatch import append_row, send_digest, send_heartbeat
 from .enrich import call_llm, enrich
 from .gates import gate_headcount, run_hard_gates
-from .report import RunReport, has_problem
+from .report import RunReport, has_problem, overall
 from .models import (RawSignal, normalize_company_name, normalize_domain,
                      normalize_li_slug)
 
@@ -57,6 +57,14 @@ def _looks_like_a_deal(sig: RawSignal) -> bool:
     "Jefferies raises India allocation to 14%" has the word but no amount."""
     return bool(_DEAL_HINT.search(sig.title or "")
                 and _AMOUNT_IN_HEADLINE.search(sig.title or ""))
+
+
+# AI reasons meaning "the page only had a headline / one-line mention of this company".
+_HEADLINE_ONLY = re.compile(
+    r"headline|snippet|single[- ]line mention|roundup (?:fragment|mention)|"
+    r"no (?:substantive|actionable|real) (?:article |details|information|text)|"
+    r"(?:lacks?|without|not contain) (?:sufficient |any )?(?:company )?details|"
+    r"could ?n[o']?t (?:be )?read", re.I)
 
 
 def _same_company(a: str, b: str) -> bool:
@@ -187,7 +195,16 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         attempt_no[art.signal_id()] = store.claim_signal(art.signal_id(), art.source_id)
         fresh.append(art)
 
-    readable = [a for a in fresh if extract.worth_reading(a)]
+    readable = []
+    for a in fresh:
+        link = (a.raw or {}).get("publisher_url") or a.url
+        if ingest.is_section_page(link, a.title):
+            stats["not_article"] = stats.get("not_article", 0) + 1
+            report.section_pages.append(link)
+            log.info("skipping %s — a website section page, not a story", link)
+            continue
+        if extract.worth_reading(a):
+            readable.append(a)
     stats["articles_read"] = len(readable)
     use_llm = cfg["run"].get("llm_extraction", True) and not dry_run_llm_off(cfg)
     # Cap requests per run so one busy day cannot burn the whole daily allowance in a
@@ -432,6 +449,10 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             continue
         budget -= 1
         account, reason = enrich(sig, hc, detail, is_follow_on, cfg)
+        _parent = (sig.raw or {}).get("parent_title") or sig.title
+        if (account is not None and (sig.raw or {}).get("ai_unreadable")) or (
+                account is None and _HEADLINE_ONLY.search(reason or "")):
+            report.note_headline_only(sig.url, _parent)
         if account is None:
             if reason.startswith("india_unknown"):
                 _list_india_unknown(store, report, sig, reason.split(":", 1)[1].strip())
@@ -482,10 +503,16 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     from datetime import datetime as _now_dt, timezone as _now_tz
     report.finished = _now_dt.now(_now_tz.utc)
     stats["india_unknown"] = len(report.india_unknown)
+    # Earlier runs that sent nothing are summarised at the end of the next email.
+    try:
+        report.quiet_runs = json.loads(store.get_state("quiet_runs") or "[]")
+    except ValueError:
+        report.quiet_runs = []
     emailed = send_digest([p[0] for p in pending], cfg, dry_run, stats, dead, report)
 
     # 7. Heartbeat. Silence should never be ambiguous: after N quiet hours, say so.
     hb = cfg["dispatch"].get("heartbeat", {})
+    any_email = bool((pending or report.india_unknown) and emailed)
     if hb.get("enabled", True):
         every = float(hb.get("quiet_hours", 6))
         if (pending or report.india_unknown) and emailed:
@@ -496,6 +523,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
                 store.mark_now("last_email")          # first ever run; start the clock
             elif quiet >= every:
                 if send_heartbeat(cfg, stats, quiet, dry_run, dead, report):
+                    any_email = True
                     store.mark_now("last_email")
                     store.mark_now("last_problem_email")
             elif has_problem(report, stats, dead):
@@ -506,7 +534,16 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
                 if since is None or since >= float(hb.get("problem_every_hours", 2)):
                     if send_heartbeat(cfg, stats, quiet, dry_run, dead, report,
                                       problem=True):
+                        any_email = True
                         store.mark_now("last_problem_email")
+
+    # Remember what this run did if nobody was told, so the next email can show it.
+    if any_email:
+        store.set_state("quiet_runs", "[]")
+    else:
+        head = overall(report, stats, dead)[0]
+        report.quiet_runs.append(report.quiet_summary(stats, head))
+        store.set_state("quiet_runs", json.dumps(report.quiet_runs[-60:]))
 
     for account, account_id, alert_id, wrote in pending:
         # The 180-day cool-off starts only once the account has actually been
