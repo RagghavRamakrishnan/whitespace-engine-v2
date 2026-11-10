@@ -109,6 +109,21 @@ def _name_in_title(name: str, title: str) -> bool:
     return bool(words) and words[0] in (title or "").lower()
 
 
+def _name_in_lead(name: str, body: str) -> bool:
+    """True when the company is named in the opening of the article it came from.
+    A founder-profile story ("Kishore Manepalli's Mission…") names the company in its
+    first lines, not its headline — that is its own story, not a headline list."""
+    lead = (body or "").split("[Article context]", 1)
+    if len(lead) < 2:
+        return False
+    words = [w for w in re.findall(r"[a-z0-9]+", (name or "").lower())
+             if w not in {"pvt", "ltd", "private", "limited", "inc", "the"}]
+    if not words:
+        return False
+    return re.search(r"\b" + r"\W+".join(map(re.escape, words)) + r"\b",
+                     lead[1].lower()) is not None
+
+
 def _same_company(a: str, b: str) -> bool:
     """Same company under a shorter or longer name: "scanxt" vs "scanxt scientific"."""
     if not a or not b:
@@ -551,7 +566,8 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             continue
         parent_title = (sig.raw or {}).get("parent_title") or ""
         if sig.from_body and parent_title and not _ROUNDUP_TITLE.search(parent_title) \
-                and not _name_in_title(account.company_name, parent_title):
+                and not _name_in_title(account.company_name, parent_title) \
+                and not _name_in_lead(account.company_name, sig.body):
             # Picked up from a list of headlines on a page about something else.
             account.source_label += (" (found in a headline list on this page — search "
                                      "the company name if the link doesn't mention it)")

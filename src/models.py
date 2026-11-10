@@ -40,9 +40,36 @@ _LEGAL_SUFFIX = re.compile(
     r"technologies|technology|labs|systems|solutions|ventures|group)\b\.?", re.I)
 
 
+# Scraps of page text that sometimes get glued to the FRONT of a company name, e.g.
+# "PM IST UK-based FluoRok" (a timestamp plus a location descriptor). Left in, the
+# name no longer matched the FluoRok already sent and came back as new.
+_LEADING_JUNK = re.compile(
+    r"^(?:"
+    r"(?i:published\s+on\b[^A-Za-z]*(?:[A-Z][a-z]{2,8}\b[^A-Za-z]*)?(?:at\b[^A-Za-z]*)?)"   # "Published On Nov 10, 2026 at 12:23"
+    r"|(?i:(?:\d{1,2}[:.]\d{2}\s*)?(?:am|pm)\s+ist\b)"                 # "12:23 PM IST", "PM IST"
+    r"|(?i:\d{1,2}[:.]\d{2}\s*(?:am|pm)\b)"                            # "12:23 PM"
+    r"|(?!(?i:plant|cloud|web|app|science|research|evidence|value|skill|data|"
+    r"subscription|community|tech|ai|cell|merit|outcome|usage|fee)-based)"
+    r"[A-Z][\w.&']*(?: [A-Z][\w.&']*)?-based\b"                     # "UK-based", "Delhi NCR-based"
+    r"|[-|:,\u2013\u2014]+"                                      # stray punctuation
+    r")\s*")
+
+
+def strip_leading_junk(name: str | None) -> str:
+    """'PM IST UK-based FluoRok' -> 'FluoRok'. Never strips the whole name."""
+    n = (name or "").strip()
+    for _ in range(6):
+        m = _LEADING_JUNK.match(n)
+        if not m or not m.group(0) or not n[m.end():].strip():
+            break
+        n = n[m.end():].strip()
+    return n
+
+
 def collapse_doubled_name(name: str | None) -> str:
     """'Clinics On Cloud Clinics On Cloud' -> 'Clinics On Cloud'. Google News
     snippets often repeat the name, which slipped past the 'already sent' check."""
+    name = strip_leading_junk(name)
     words = (name or "").split()
     half = len(words) // 2
     if half and len(words) % 2 == 0 and \

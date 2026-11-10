@@ -224,7 +224,10 @@ def _checks(rep: RunReport, stats: dict[str, Any],
     thin = stats.get("thin_body", 0)
     if read and thin:
         share = thin / read
-        lvl = PROBLEM if share > 0.4 else WATCH if share > 0.15 else INFO
+        # One paywalled page on a quiet run is "1 of 1" = 100%; that is worth a
+        # look, not a red "needs fixing". Red needs at least 3 affected articles.
+        lvl = (PROBLEM if share > 0.4 and thin >= 3 else
+               WATCH if share > 0.15 else INFO)
         ex = f" e.g. “{rep.thin_titles[0]}”" if rep.thin_titles else ""
         out.append((lvl, f"{thin} of {read} articles only partly downloaded",
                     "The engine saw only the summary, so a company named lower down "
