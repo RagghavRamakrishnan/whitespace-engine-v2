@@ -107,6 +107,21 @@ PROVIDERS = {"groq": _call_groq, "openai": _call_openai,
 
 # Rejection reasons that are really "I couldn't read the page", not facts about the
 # company.
+# The AI sometimes rejects a funded company only because a roundup gave one line about
+# it ("mentioned only in a monthly funding roundup with no details") while letting its
+# neighbours on the same list through. Thin coverage is not a disqualifier — the AE
+# judges these. A reason that ALSO names a clear disqualifier still rejects.
+_ROUNDUP_THIN = re.compile(
+    r"round[- ]?up|(?:mentioned|named|listed) only|only (?:mentioned|named|listed)|"
+    r"no (?:specific |distinct |standalone |further )?(?:corporate |company )?details|"
+    r"without (?:sufficient|enough|any) (?:\w+ ){0,3}details|funding (?:list|digest)", re.I)
+_HARD_NO = re.compile(
+    r"well[- ]known|far (?:more|above|exceed)|more than 50|over 50|hundreds of|"
+    r"not an operating company|not a company|venture fund|investment firm|accelerator|"
+    r"government|association|publisher|award|acquisition|acquired|rumou?r|in talks|"
+    r"no (?:genuine )?new funding|not a (?:genuine )?(?:new )?funding|rights issue|"
+    r"parent[- ]company|india|abroad|foreign", re.I)
+
 _UNREADABLE = re.compile(
     r"error page|no (?:actual |article |real )?content|could ?n[o']?t (?:be )?"
     r"(?:read|load|access|resolve)|unresolvable|insufficient|sparse|"
@@ -203,6 +218,24 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                     if not data.get("bottleneck"):
                         data["bottleneck"] = ("The article could not be read in full — "
                                               "check the source link before outreach.")
+                elif _ROUNDUP_THIN.search(reason) and not _HARD_NO.search(reason):
+                    log.info("not rejecting %s — only thin roundup coverage (%s)",
+                             sig.company_name, reason[:80])
+                    data["disqualify"] = False
+                    if not data.get("bottleneck"):
+                        data["bottleneck"] = ("Only a one-line mention in a funding "
+                                              "roundup — check the source before outreach.")
+                    # A disqualified reply leaves the write-up blank; fill the gaps so
+                    # the email never shows an empty draft.
+                    name = data.get("company_name") or sig.company_name
+                    if not data.get("expansion_trigger"):
+                        data["expansion_trigger"] = "Named as a recent raise in a funding roundup."
+                    if not data.get("recommended_package"):
+                        data["recommended_package"] = "Job Slots"
+                    if not data.get("inmail_hook"):
+                        data["inmail_hook"] = (f"Congratulations on the recent funding at {name}. "
+                                               "How are you planning the next few hires as the "
+                                               "team grows?")
                 elif (_INDIA_REASON.search(reason)
                       and (data.get("india_presence") or "unknown") != "no"):
                     # Rejected only for India, and the AI is not SURE: the AE decides.

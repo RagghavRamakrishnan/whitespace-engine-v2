@@ -137,7 +137,17 @@ ARTICLE / FILING TEXT
 Return the enrichment JSON now."""
 
 
+# Headcount sources that are only a GUESS (e.g. "Series B companies are usually ~130
+# people"). Shown to the AI as a number under "VERIFIED FACTS", a guess got treated as a
+# measured count and companies were rejected for it ("verified headcount is 130").
+_GUESSED_SOURCES = {"stage_estimate", "estimate", "llm_estimate"}
+
+
 def build_user_prompt(sig, headcount, headcount_source, detail, is_follow_on: bool) -> str:
+    if headcount is None or headcount_source in _GUESSED_SOURCES:
+        headcount = ("UNKNOWN — not measured yet. Do not judge or reject on size from "
+                     "any number; a human checks LinkedIn later")
+        headcount_source = "none"
     return USER_TEMPLATE.format(
         source_id=sig.source_id,
         signal_type=sig.signal_type,
