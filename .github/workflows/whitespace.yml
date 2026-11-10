@@ -5,7 +5,7 @@ on:
     # Every 15 minutes. Free and unlimited on a PUBLIC repo.
     # GitHub's scheduler is best-effort: runs can start a few minutes late at busy
     # times. Irrelevant for a race measured in hours.
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:        # "Run workflow" button for manual tests
 
 permissions:
