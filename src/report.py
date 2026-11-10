@@ -120,6 +120,7 @@ class RunReport:
         self.alerts: list[tuple[str, str, str]] = []    # (company, source, kind)
         self.rejected: list[tuple[str, str]] = []        # (company, plain reason)
         self.already_sent: list[str] = []
+        self.rejected_earlier: list[str] = []   # clear "no" in the last 7 days, skipped
         self.thin_titles: list[str] = []
         self.miss_titles: list[str] = []
         self.short_titles: list[str] = []
@@ -400,7 +401,8 @@ def _story_lines(rep: RunReport, stats: dict[str, Any]) -> list[str]:
         f"  • {len(rep.india_unknown)} with India presence unknown — listed for your call",
         f"  • {len(rep.rejected)} rejected (listed below — tell me if any look wrong)",
         f"  • {len(rep.already_sent)} already sent to you on an earlier run",
-    ]
+    ] + ([f"  • {len(rep.rejected_earlier)} rejected on an earlier run this week "
+          f"(not re-checked)"] if rep.rejected_earlier else [])
     return lines
 
 
@@ -490,6 +492,9 @@ def render_text(rep: RunReport | None, stats: dict[str, Any],
             L.append(f"  - Not India-based ({len(foreign)}): " + ", ".join(foreign))
     if rep.already_sent:
         L += ["", "ALREADY SENT EARLIER (skipped): " + ", ".join(rep.already_sent[:20])]
+    if rep.rejected_earlier:
+        L += ["", "REJECTED EARLIER THIS WEEK (skipped, not re-checked): "
+              + ", ".join(rep.rejected_earlier[:20])]
     if rep.quiet_runs:
         L += ["", f"RUNS SINCE YOUR LAST EMAIL ({len(rep.quiet_runs)} — nothing new to send)"]
         L += ["  " + x for x in _quiet_lines(rep)]
@@ -548,6 +553,9 @@ def render_html(rep: RunReport | None, stats: dict[str, Any],
     if rep.already_sent:
         h.append("<p><b>Already sent earlier (skipped):</b> "
                  f"{e(', '.join(rep.already_sent[:20]))}</p>")
+    if rep.rejected_earlier:
+        h.append("<p><b>Rejected earlier this week (skipped, not re-checked):</b> "
+                 f"{e(', '.join(rep.rejected_earlier[:20]))}</p>")
     if rep.quiet_runs:
         h.append(f"<b>Runs since your last email</b> <span style='color:#57606a'>— "
                  f"{len(rep.quiet_runs)} run{'s' if len(rep.quiet_runs) > 1 else ''} with "

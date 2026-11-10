@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta
 import logging
 import re
 import sys
@@ -20,7 +21,7 @@ from .dispatch import append_row, send_digest, send_heartbeat
 from .enrich import call_llm, enrich
 from .gates import gate_headcount, run_hard_gates
 from .report import RunReport, has_problem, overall
-from .models import (RawSignal, normalize_company_name, normalize_domain,
+from .models import (RawSignal, collapse_doubled_name, normalize_company_name, normalize_domain,
                      normalize_li_slug)
 
 logging.basicConfig(level=logging.INFO,
@@ -65,6 +66,47 @@ _HEADLINE_ONLY = re.compile(
     r"no (?:substantive|actionable|real) (?:article |details|information|text)|"
     r"(?:lacks?|without|not contain) (?:sufficient |any )?(?:company )?details|"
     r"could ?n[o']?t (?:be )?read", re.I)
+
+
+# ---- remembered rejections: a clear-cut "no" is not re-judged for a week ----------
+# Each new article used to give the AI a fresh chance to decide differently (Eggoz was
+# rejected as too large, then sent an hour later) and the same names filled every email.
+REJECT_MEMORY_DAYS = 7
+_CLEAR_STAGES = {"capital", "headcount", "is_company"}
+_CLEAR_AI = re.compile(
+    r"well[- ]known|far (?:more|above|exceed)|more than 50|well over 50|over 50 "
+    r"employees|hundreds of employees|large (?:frontline )?workforce|established "
+    r"(?:company|nbfc|brand|business)|not an operating company|not a company|"
+    r"rights issue|internal (?:funding|transfer|investment)|parent[- ]company|"
+    r"no (?:genuine )?new funding|not a (?:genuine )?(?:new )?funding", re.I)
+
+
+def _reject(store: Store, report: Any, sig: RawSignal, stage: str, reason: str) -> None:
+    report.reject(sig.company_name, stage, reason)
+    st = re.sub(r"^gate_", "", stage or "")
+    key = sig.name_key
+    if key and (st in _CLEAR_STAGES or (st == "ai_veto" and _CLEAR_AI.search(reason or ""))):
+        store.set_state(f"rejected:{key}", datetime.now().isoformat())
+
+
+def _recently_rejected(store: Store, key: str) -> bool:
+    raw = store.get_state(f"rejected:{key}") if key else None
+    if not raw:
+        return False
+    return datetime.now() - datetime.fromisoformat(raw) < timedelta(days=REJECT_MEMORY_DAYS)
+
+
+# ---- links that may not mention the company ----------------------------------------
+_ROUNDUP_TITLE = re.compile(r"\bstartups?\b.*\b(?:raised|funding|deals?)\b|this week|"
+                            r"weekly|round-?up|funding (?:news|wrap)\b|\btop \d+|"
+                            r"\blist\b|deals? (?:this|of the)", re.I)
+
+
+def _name_in_title(name: str, title: str) -> bool:
+    words = [w for w in re.findall(r"[a-z0-9]+", (name or "").lower())
+             if len(w) > 2 and w not in {"pvt", "ltd", "private", "limited", "inc", "the",
+                                         "india", "technologies", "labs"}]
+    return bool(words) and words[0] in (title or "").lower()
 
 
 def _same_company(a: str, b: str) -> bool:
@@ -200,8 +242,16 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         attempt_no[art.signal_id()] = store.claim_signal(art.signal_id(), art.source_id)
         fresh.append(art)
 
+    import json as _json
+    try:
+        carried_ids = set(_json.loads(store.get_state("carried_over") or "[]"))
+    except ValueError:
+        carried_ids = set()
     readable = []
     for a in fresh:
+        if a.signal_id() in carried_ids:
+            a.raw = a.raw or {}
+            a.raw["carried"] = True
         link = (a.raw or {}).get("publisher_url") or a.url
         if ingest.is_section_page(link, a.title):
             stats["not_article"] = stats.get("not_article", 0) + 1
@@ -313,6 +363,9 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
 
     stats["signals"] = len(signals)
     budget = cfg["run"].get("max_enrichments_per_run", 25)
+    carried_now: set[str] = set()
+    # Leftovers from the previous run first (stable sort keeps the rest in order).
+    signals.sort(key=lambda s: s.signal_id() not in carried_ids)
 
     for sig in signals:
         # 0. Already sent to the AE? Checked FIRST: a company already in the inbox must
@@ -324,6 +377,12 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
                 if sig.company_name and sig.company_name not in report.already_sent:
                     report.already_sent.append(sig.company_name)
                 continue
+        if sig.from_body and _recently_rejected(store, sig.name_key):
+            # Clearly rejected in the last week: skip quietly, don't re-judge.
+            stats["rejected_earlier"] = stats.get("rejected_earlier", 0) + 1
+            if sig.company_name not in report.rejected_earlier:
+                report.rejected_earlier.append(sig.company_name)
+            continue
         # 1. hard gates (cheap, deterministic)
         passed, reason, detail = run_hard_gates(sig, cfg)
         if not passed:
@@ -333,7 +392,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             # roundup, or a headline with no company in it, is not a rejection.
             if sig.company_name and stage != "company" and (
                     sig.from_body or stage in ("india", "icp")):
-                report.reject(sig.company_name, stage, reason)
+                _reject(store, report, sig, stage, reason)
             store.log_drop(reason.split(":")[0], reason, sig.company_name, sig.url)
             continue
 
@@ -401,7 +460,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             hc_gate = gate_headcount(hc.count, cfg)
             if not hc_gate.passed:
                 stats["headcount"] += 1
-                report.reject(sig.company_name, "headcount",
+                _reject(store, report, sig, "headcount",
                               f"{hc_gate.reason} (source: {hc.source})")
                 store.log_drop("headcount", f"{hc_gate.reason} (source: {hc.source})",
                                sig.company_name, sig.url)
@@ -422,7 +481,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             cap = cfg["gates"]["headcount"].get("max_total_raised_usd", 25_000_000)
             if raised >= cap:
                 stats["headcount"] += 1
-                report.reject(sig.company_name, "headcount",
+                _reject(store, report, sig, "headcount",
                               f"has raised about ${raised / 1e6:.0f}M in total")
                 store.log_drop("headcount",
                                f"has raised ~${raised / 1e6:.0f}M to date — far above a "
@@ -435,7 +494,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             if not ambiguous_band and not guessed and hc.count is not None \
                     and hc.count > ceiling:
                 stats["headcount"] += 1
-                report.reject(sig.company_name, "headcount",
+                _reject(store, report, sig, "headcount",
                               f"about {hc.count} staff according to {hc.source}")
                 store.log_drop("headcount",
                                f"estimated {hc.count}, beyond the {ceiling} plausibility "
@@ -449,6 +508,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             # Out of time or allowance: re-read this article next run rather than
             # lose the company. Nothing here is dropped.
             store.requeue_signal(sig.signal_id())
+            carried_now.add(sig.signal_id())
             stats["time_deferred"] += 1
             report.carried_over.append(sig.company_name)
             continue
@@ -465,7 +525,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
             if reason.startswith("ai_veto"):
                 # The model rejected it outright — a drop, not something to review.
                 stats["ai_veto"] += 1
-                report.reject(sig.company_name, "ai_veto", reason)
+                _reject(store, report, sig, "ai_veto", reason)
                 store.log_drop("ai_veto", reason, sig.company_name, sig.url)
             else:
                 stats["review"] += 1
@@ -479,6 +539,22 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
         # The AI may name it differently from the headline ("ScaNxt" vs "ScaNxt
         # Scientific Technologies Pvt Ltd"). Check its final name against this run too.
         final_key = normalize_company_name(account.company_name)
+        account.company_name = collapse_doubled_name(account.company_name)
+        # The AI's cleaned-up name or website may match an account already sent even
+        # when the article's raw name did not ("Clinics On Cloud" was sent twice).
+        f_state, _ = store.dedup_check(normalize_domain(account.website or ""), "",
+                                       final_key)
+        if f_state == "cooloff":
+            stats["dedup"] += 1
+            if account.company_name not in report.already_sent:
+                report.already_sent.append(account.company_name)
+            continue
+        parent_title = (sig.raw or {}).get("parent_title") or ""
+        if sig.from_body and parent_title and not _ROUNDUP_TITLE.search(parent_title) \
+                and not _name_in_title(account.company_name, parent_title):
+            # Picked up from a list of headlines on a page about something else.
+            account.source_label += (" (found in a headline list on this page — search "
+                                     "the company name if the link doesn't mention it)")
         if final_key and final_key != sig.name_key and any(
                 _same_company(final_key, k) for k in alerted_names_this_run):
             stats["dedup"] += 1
@@ -541,6 +617,9 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
                                       problem=True):
                         any_email = True
                         store.mark_now("last_problem_email")
+
+    # Articles whose companies were not all finished: first in line next run.
+    store.set_state("carried_over", _json.dumps(sorted(carried_now)))
 
     # Remember what this run did if nobody was told, so the next email can show it.
     if any_email:

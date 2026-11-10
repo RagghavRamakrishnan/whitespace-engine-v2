@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Any, Sequence
 
-from .models import RawSignal
+from .models import RawSignal, collapse_doubled_name
 
 log = logging.getLogger(__name__)
 
@@ -331,7 +331,10 @@ def plan_requests(articles: Sequence[RawSignal]) -> list[list[RawSignal]]:
     # Individual funding stories first, newest first: they are the early signal.
     # Roundups go LAST — every company in them was usually reported individually
     # days earlier, so a roundup is a backstop, not the main source.
-    articles = sorted(articles, key=lambda a: (stated_deal_count(a) > 0,
+    # Articles left unfinished by the previous run go FIRST — otherwise new stories
+    # keep jumping ahead and the same leftovers are carried over run after run.
+    articles = sorted(articles, key=lambda a: (not (a.raw or {}).get("carried"),
+                                               stated_deal_count(a) > 0,
                                                -a.published_at.timestamp()))
     plan: list[list[RawSignal]] = []
     group: list[RawSignal] = []
@@ -455,7 +458,7 @@ def to_signals(parent: RawSignal, companies: Sequence[dict[str, Any]]) -> list[R
     out: list[RawSignal] = []
     context = f"{parent.title} {(parent.body or '')[:400]}"
     for c in companies:
-        name = (c.get("company_name") or "").strip()
+        name = collapse_doubled_name((c.get("company_name") or "").strip())
         if len(name) < 2:
             continue
         evidence = (c.get("evidence") or "").strip()

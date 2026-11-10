@@ -40,11 +40,22 @@ _LEGAL_SUFFIX = re.compile(
     r"technologies|technology|labs|systems|solutions|ventures|group)\b\.?", re.I)
 
 
+def collapse_doubled_name(name: str | None) -> str:
+    """'Clinics On Cloud Clinics On Cloud' -> 'Clinics On Cloud'. Google News
+    snippets often repeat the name, which slipped past the 'already sent' check."""
+    words = (name or "").split()
+    half = len(words) // 2
+    if half and len(words) % 2 == 0 and \
+            [w.lower() for w in words[:half]] == [w.lower() for w in words[half:]]:
+        return " ".join(words[:half])
+    return (name or "").strip()
+
+
 def normalize_company_name(name: str | None) -> str:
     """'Vecton AI Technologies Pvt. Ltd.' -> 'vecton ai' for fuzzy dedup."""
     if not name:
         return ""
-    n = re.sub(r"[^\w\s&]", " ", name.lower())
+    n = re.sub(r"[^\w\s&]", " ", collapse_doubled_name(name).lower())
     n = _LEGAL_SUFFIX.sub(" ", n)
     return re.sub(r"\s+", " ", n).strip()
 
