@@ -122,6 +122,11 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
              "recovered_on_recheck": 0, "short_lists": 0, "dedup": 0, "gated": 0,
              "headcount": 0, "hc_verified": 0, "hc_unverified": 0, "ai_veto": 0,
              "review": 0, "enriched": 0, "alerted": 0}
+    # How long since the previous run STARTED? The timer that wakes the engine can
+    # silently skip runs (GitHub's own timer once went 7 hours without firing), and a
+    # run that finds something looks normal — so measure the gap and report it.
+    report.gap_hours = store.hours_since("last_run_start")
+    store.mark_now("last_run_start")
 
     # THE CLOCK. GitHub kills a run at 12 minutes, and a killed run sends nothing
     # and saves nothing — so the next run repeats the same work and can die the same

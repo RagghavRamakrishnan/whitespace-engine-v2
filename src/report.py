@@ -131,7 +131,8 @@ class RunReport:
         self.gn_error = ""
         self.india_unknown: list[tuple[str, str, str, str]] = []  # name, hq, source, url
         self.carried_over: list[str] = []
-        self.section_pages: list[str] = []   # home/section pages skipped (not stories)
+        self.section_pages: list[str] = []
+        self.gap_hours: float | None = None   # time since the previous run started   # home/section pages skipped (not stories)
         # Articles that downloaded but held only headlines / one-line mentions, so the
         # AI had no real story to judge companies from. url -> [title, companies hit]
         self.headline_only: dict[str, list] = {}
@@ -200,6 +201,22 @@ def _checks(rep: RunReport, stats: dict[str, Any],
                     "Whole groups of companies are not being seen. Send me the log."))
     if not broken and not empty and not dead:
         out.append((OK, f"All {len(enabled)} news sources responded", ""))
+
+    # 1b. Is the engine actually being woken every 15 minutes?
+    gap = rep.gap_hours
+    if gap is not None:
+        g = (f"{gap * 60:.0f} minutes" if gap < 1.5 else f"{gap:.1f} hours")
+        if gap > 2:
+            out.append((PROBLEM, f"The previous run was {g} ago — the engine should run "
+                                 f"every 15 minutes",
+                        "Runs were skipped, so news from that gap reached you late. The "
+                        "timer that starts the engine is not firing reliably. Tell me."))
+        elif gap > 0.75:
+            out.append((WATCH, f"The previous run was {g} ago (should be about 15 minutes)",
+                        "A run or two was skipped. Occasional is fine; if this repeats, "
+                        "tell me."))
+        else:
+            out.append((OK, f"Running on time — previous run {g} ago", ""))
 
     # 2. Did articles actually download in full?
     read = max(stats.get("articles_read", 0) - stats.get("quota_blocked", 0), 0)
