@@ -127,7 +127,12 @@ _UNREADABLE = re.compile(
     r"(?:read|load|access|resolve)|unresolvable|insufficient|sparse|"
     r"lack(?:s|ing)? (?:of )?(?:detail|content|information|text)|"
     r"not (?:enough|sufficient) (?:detail|information|text)|page (?:is )?unavailable|"
-    r"only (?:a |the )?headline", re.I)
+    r"only (?:a |the )?headline|"
+    # Sites that block automated readers serve a security-check page instead of the
+    # story. The AI then "rejects" the company for having no article — wrongly.
+    r"cloudflare|captcha|bot[- ](?:protection|check|detection|challenge)|"
+    r"security (?:check|challenge|verification|page)|access denied|"
+    r"verify (?:that )?(?:you are|you're) (?:a )?human|just a moment", re.I)
 
 _last_call_at = 0.0
 

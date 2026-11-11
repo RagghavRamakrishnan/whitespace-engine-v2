@@ -210,12 +210,15 @@ def _checks(rep: RunReport, stats: dict[str, Any],
         if gap > 2:
             out.append((PROBLEM, f"The previous run was {g} ago — the engine should run "
                                  f"every 15 minutes",
-                        "Runs were skipped, so news from that gap reached you late. The "
-                        "timer that starts the engine is not firing reliably. Tell me."))
+                        "Runs were missed, so news from that gap reached you late; the "
+                        "engine catches up on those stories automatically. If GitHub "
+                        "emailed you that runs failed, they started but crashed — send "
+                        "me that log. If there was no such email, the timer that starts "
+                        "the engine did not fire — tell me."))
         elif gap > 0.75:
             out.append((WATCH, f"The previous run was {g} ago (should be about 15 minutes)",
-                        "A run or two was skipped. Occasional is fine; if this repeats, "
-                        "tell me."))
+                        "A run or two was missed (skipped or failed). Occasional is fine; "
+                        "if this repeats, tell me."))
         else:
             out.append((OK, f"Running on time — previous run {g} ago", ""))
 

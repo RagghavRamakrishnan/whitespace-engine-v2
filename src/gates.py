@@ -178,7 +178,11 @@ def gate_capital(sig: RawSignal, cfg: dict[str, Any]) -> GateResult:
         biggest, raw = _largest_amount_usd(sig.deal_text)
     if biggest >= MEGA_ROUND_USD:
         return GateResult(False, f"round size '{raw}' implies a company far above 50 staff")
-    late = LATE_STAGE_RE.search(text)
+    # Like the amount, the stage is read from THIS company's own deal text only.
+    # A roundup's intro ("...while X closed its Series D") used to mark every
+    # company in the article as late-stage and reject all of them.
+    own_lead = sig.deal_text[: len(sig.title or "") + 701].lower()
+    late = LATE_STAGE_RE.search(own_lead)
     if late:
         return GateResult(False, f"late-stage capital event ('{late.group(0)}') — outside SMB band")
     own = sig.deal_text
