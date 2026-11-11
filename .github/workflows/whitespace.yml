@@ -2,9 +2,10 @@ name: Whitespace Alert Engine
 
 on:
   schedule:
-    # Every 15 minutes. Free and unlimited on a PUBLIC repo.
-    # GitHub's scheduler is best-effort: runs can start a few minutes late at busy
-    # times. Irrelevant for a race measured in hours.
+    # Every 15 minutes, at :07 :22 :37 :52 — off the busy top of the hour, where
+    # GitHub drops the most scheduled runs. This is the BACKUP timer: the main one is
+    # cron-job.org pressing "Run workflow" (see SETUP.md), because GitHub's own timer
+    # is best-effort and once skipped 7 hours of runs.
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:        # "Run workflow" button for manual tests
 
@@ -41,8 +42,19 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
+      # Only the browser itself is installed - not the extra fonts and system
+      # packages ("--with-deps"). Those come from Ubuntu's servers, which GitHub's
+      # machines sometimes cannot reach, and fonts are not needed to read text.
+      # If the install still fails, the scan runs anyway without the browser and
+      # the email says so; the browser is only a fallback for a few pages a run.
       - name: Install browser
-        run: python -m playwright install --with-deps chromium
+        continue-on-error: true
+        run: |
+          python -m playwright install chromium || {
+            echo "Browser install failed - retrying once in 30 seconds"
+            sleep 30
+            python -m playwright install chromium
+          }
 
       # Memory (what has been read and alerted) lives in GitHub's private Actions
       # cache — NOT committed to the repo. In a public repo a committed database
