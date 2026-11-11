@@ -115,9 +115,29 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
+        UNAVAILABLE["reason"] = "browser software not installed"
         log.warning("browser not installed — 'read more' pages read from plain download only")
         return results
+    try:
+        _read_pages(sync_playwright, urls, extract, max_pages, timeout_ms, deadline,
+                    results)
+    except Exception as exc:                                # noqa: BLE001
+        # The browser would not start (e.g. its install failed this run) or died
+        # mid-way. Keep whatever was read; every other article still goes through
+        # on its plain download. The email shows a warning line.
+        UNAVAILABLE["reason"] = str(exc).strip().splitlines()[0][:160] if str(exc).strip() \
+            else type(exc).__name__
+        log.warning("browser unavailable this run (%s) — those pages use the plain "
+                    "download only", UNAVAILABLE["reason"])
+    return results
 
+
+# Set when the browser could not be used in this run; read by the email report.
+UNAVAILABLE = {"reason": ""}
+
+
+def _read_pages(sync_playwright, urls, extract, max_pages, timeout_ms, deadline,
+                results) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(
@@ -195,5 +215,7 @@ def fetch_full_pages(urls: Sequence[str], extract: Callable[[str], str],
                                 "paywalled": is_paywalled(text), "final_url": page.url}
             except Exception as exc:                        # noqa: BLE001
                 log.warning("browser read failed %s: %s", url, exc)
-        browser.close()
-    return results
+        try:
+            browser.close()
+        except Exception:                                   # noqa: BLE001
+            pass

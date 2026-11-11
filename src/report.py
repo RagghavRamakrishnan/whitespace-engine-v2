@@ -269,6 +269,15 @@ def _checks(rep: RunReport, stats: dict[str, Any],
                         f"Google News links: {ok} of {tried} opened as the real article",
                         "The rest fell back to the browser. A few failures are normal."))
 
+    # 2c. Was the browser available? (It is only a fallback for a few pages.)
+    missed = stats.get("browser_missed", 0)
+    if missed:
+        out.append((WATCH, f"The browser wasn't available this run — {missed} page(s) "
+                           f"that needed it were read from the plain download only",
+                    "Every other article was read as normal. Those few pages may show "
+                    "less text, so a company named lower down could be missed. If you "
+                    "see this on several runs in a row, tell me."))
+
     # 3. Did the AI read everything it was meant to?
     waiting = stats.get("quota_blocked", 0)
     if waiting:

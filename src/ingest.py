@@ -421,7 +421,8 @@ def _enrich_many(sigs: list[RawSignal], workers: int = 3) -> list[RawSignal]:
 
 # Counters for the email footer; reset at the start of each run by collect().
 FETCH_STATS = {"browser_opened": 0, "expanded": 0, "paywalled": 0,
-               "gn_tried": 0, "gn_decoded": 0, "gn_error": ""}
+               "gn_tried": 0, "gn_decoded": 0, "gn_error": "",
+               "browser_missed": 0}     # pages that needed the browser; it was down
 SOURCE_ERRORS: dict[str, str] = {}      # source id -> why it failed this run
 _BROWSER = {"enabled": True, "max_pages": 15, "used": 0, "deadline": None}
 
@@ -445,7 +446,10 @@ def _expand_in_browser(sigs: list[RawSignal]) -> None:
     _BROWSER["used"] += len(todo)
     from . import browser
     urls = [s.raw.get("publisher_url") or s.url for s in todo]
+    browser.UNAVAILABLE["reason"] = ""
     got = browser.fetch_full_pages(urls, _article_text, max_pages=left, deadline=dl)
+    if browser.UNAVAILABLE["reason"]:
+        FETCH_STATS["browser_missed"] += len([u for u in urls if u not in got])
     for s, u in zip(todo, urls):
         r = got.get(u)
         if not r:
