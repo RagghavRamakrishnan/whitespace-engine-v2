@@ -216,7 +216,7 @@ gates:
        facility management, labour contractor, courier, logistics manpower]
   capital:
     accepted_round_types:
-      [pre-seed, seed, angel, pre-series a, series a, series b, bridge, grant, accelerator, debt, extension]
+      [pre-seed, seed, angel, pre-series a, series a, pre-series b, series b, bridge, grant, accelerator, debt, extension]
 
 # ------------------------------------------------- 3. HEADCOUNT VERIFICATION
 verification:
