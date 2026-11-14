@@ -110,7 +110,7 @@ Return JSON only, in this exact shape:
 {{"articles": [{{"article_index": <int>, "companies": [
   {{"company_name": "<as written>",
     "amount": "<e.g. $2.4M or Rs 15 crore, or null>",
-    "round_type": "<Pre-Seed|Seed|Angel|Pre-Series A|Series A|Series B|Bridge|Grant|Accelerator|Debt|Extension|Undisclosed>",
+    "round_type": "<Pre-Seed|Seed|Angel|Pre-Series A|Series A|Pre-Series B|Series B|Bridge|Grant|Accelerator|Debt|Extension|Undisclosed>",
     "city": "<Indian city if stated, else null>",
     "hq_country": "<country where the company is headquartered, if stated, else null>",
     "india_link": "<if based outside India: any India team, office, entity or Indian founders the article mentions, else null>",

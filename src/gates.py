@@ -30,7 +30,7 @@ FUNDING_PATTERNS = [
 # unit, so a regex on the digits alone misfires. Anything at or above USD 100M (or
 # ~INR 800 crore) belongs to a company far larger than 50 people.
 MONEY_RE = re.compile(
-    r"(?:\$|usd|inr|rs\.?|₹)\s?([\d.,]+)\s?(k|thousand|mn|m|million|bn|billion|cr|crore|lakh)?"
+    r"(?:\$|usd|inr|rs\.?|₹|€|eur|£|gbp)\s?([\d.,]+)\s?(k|thousand|mn|m|million|bn|billion|cr|crore|lakh)?"
     r"|([\d.,]+)\s?(crore|cr|lakh|million|mn|billion|bn)\b", re.I)
 # INR units converted to approximate USD: 1 crore = 10,000,000 INR ~ USD 120,000;
 # 1 lakh = 100,000 INR ~ USD 1,200. Rates move, but only the order of magnitude
@@ -58,10 +58,10 @@ def _largest_amount_usd(text: str) -> tuple[float, str]:
     return best, best_raw
 
 AMOUNT_RE = re.compile(
-    r"(?:(?:\$|usd|inr|rs\.?|₹)\s?[\d.,]+\s?(?:mn|m|million|bn|billion|cr|crore|lakh)?)"
+    r"(?:(?:\$|usd|inr|rs\.?|₹|€|eur|£|gbp)\s?[\d.,]+\s?(?:mn|m|million|bn|billion|cr|crore|lakh)?)"
     r"|(?:[\d.,]+\s?(?:crore|cr|lakh|million|mn)\b)", re.I)
 ROUND_RE = re.compile(
-    r"\b(pre-?seed|seed|angel|pre-?series\s?a|series\s?[a-c]|bridge|grant|debt|extension)\b", re.I)
+    r"\b(pre-?seed|seed|angel|pre-?series\s?[ab]|series\s?[a-c]|bridge|grant|debt|extension)\b", re.I)
 # Explicit late-stage language is a hard reject: those companies are far past 1-50.
 # Explicit non-India HQ markers. Only decisive when no India hub is also present.
 FOREIGN_HQ_RE = re.compile(
@@ -113,6 +113,12 @@ def _is_fund_raising_itself(headline: str) -> bool:
 
 NON_COMPANY_RE = re.compile(
     r"\b(yourstory|entrackr|inc42|vccircle|livemint|techcrunch|moneycontrol|economic times|"
+    # More news sites and newsletters whose names the parser has taken for a company.
+    r"sahyadri startups|indian retailer|et entrepreneur|et now|et tech|techround|"
+    r"business standard|financial express|business today|businessline|the hindu|"
+    r"times of india|hindustan times|ndtv|startup story|startupstory|indian startup news|"
+    r"startuptalky|trak\.?in|medianama|dealstreetasia|e27|tech\.eu|tech in asia|"
+    r"the ken|morning context|google news|"
     r"fund|funds|capital|ventures?|partners|vc firm|accelerator|incubator|angel network|"
     r"consortium|ministry|government|commission|authority|council|association|federation|"
     r"summit|conclave|awards?|report|survey|index)\b", re.I)
@@ -173,9 +179,11 @@ def gate_capital(sig: RawSignal, cfg: dict[str, Any]) -> GateResult:
     # Amounts are read from THIS company's own deal text only. Inherited article
     # context is excluded: a roundup's "$142 million across 21 deals" is the week's
     # total, and charging it to each company disqualifies the whole article.
+    # Only a huge figure IN THE HEADLINE rejects here. A figure found only in the body
+    # is often not the round at all ("600 million patients", a market size, a parent's
+    # valuation) — Kardi Ai was rejected that way. Those go on to the AI, which reads
+    # the whole article and still rejects a genuinely large company.
     biggest, raw = _largest_amount_usd(headline)
-    if biggest == 0:
-        biggest, raw = _largest_amount_usd(sig.deal_text)
     if biggest >= MEGA_ROUND_USD:
         return GateResult(False, f"round size '{raw}' implies a company far above 50 staff")
     # Like the amount, the stage is read from THIS company's own deal text only.

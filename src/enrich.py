@@ -122,6 +122,14 @@ _HARD_NO = re.compile(
     r"no (?:genuine )?new funding|not a (?:genuine )?(?:new )?funding|rights issue|"
     r"parent[- ]company|india|abroad|foreign", re.I)
 
+# "The text mixes several companies" is about the PAGE, not the company. The same
+# company (Holiday Tribe, Troovy, Traya) was rejected on one run for this and sent on
+# the next. A reason that ALSO names a clear disqualifier still rejects.
+_MIXED = re.compile(
+    r"mix(?:es|ed|ing)? (?:\w+ ){0,3}(?:compan|entit|snippet|content|text)|"
+    r"(?:multiple|two|several) (?:\w+ ){0,2}(?:compan|entit)|different company|"
+    r"corrupted|aggregat\w* (?:\w+ )?(?:content|snippet)", re.I)
+
 _UNREADABLE = re.compile(
     r"error page|no (?:actual |article |real )?content|could ?n[o']?t (?:be )?"
     r"(?:read|load|access|resolve)|unresolvable|insufficient|sparse|"
@@ -223,18 +231,26 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                     if not data.get("bottleneck"):
                         data["bottleneck"] = ("The article could not be read in full — "
                                               "check the source link before outreach.")
-                elif _ROUNDUP_THIN.search(reason) and not _HARD_NO.search(reason):
-                    log.info("not rejecting %s — only thin roundup coverage (%s)",
-                             sig.company_name, reason[:80])
+                elif ((_ROUNDUP_THIN.search(reason) or _MIXED.search(reason))
+                      and not _HARD_NO.search(reason)):
+                    mixed = bool(_MIXED.search(reason)) and not _ROUNDUP_THIN.search(reason)
+                    log.info("not rejecting %s — %s (%s)", sig.company_name,
+                             "article text mixed several companies" if mixed
+                             else "only thin roundup coverage", reason[:80])
                     data["disqualify"] = False
                     if not data.get("bottleneck"):
-                        data["bottleneck"] = ("Only a one-line mention in a funding "
-                                              "roundup — check the source before outreach.")
+                        data["bottleneck"] = (
+                            "The article text mixed several companies — open the source "
+                            "to confirm this company's raise before outreach." if mixed else
+                            "Only a one-line mention in a funding roundup — check the "
+                            "source before outreach.")
                     # A disqualified reply leaves the write-up blank; fill the gaps so
                     # the email never shows an empty draft.
                     name = data.get("company_name") or sig.company_name
                     if not data.get("expansion_trigger"):
-                        data["expansion_trigger"] = "Named as a recent raise in a funding roundup."
+                        data["expansion_trigger"] = ("Reported as a recent raise (article "
+                                                     "text was mixed)." if mixed else
+                                                     "Named as a recent raise in a funding roundup.")
                     if not data.get("recommended_package"):
                         data["recommended_package"] = "Job Slots"
                     if not data.get("inmail_hook"):
