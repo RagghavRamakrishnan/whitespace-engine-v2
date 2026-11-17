@@ -39,6 +39,10 @@ _IGNORE = re.compile(r"discarding data: None|AFC is enabled|HTTP Request:|escala
 
 # Known technical messages -> what they mean for the AE.
 _PLAIN = [
+    (re.compile(r"google news paused: (\d+) of (\d+)"),
+     lambda m: f"Google News asked the engine to slow down, so {m.group(1)} of its "
+               f"{m.group(2)} searches were skipped this run. They are tried again next "
+               "run, and stories up to 3 days old are still picked up then."),
     (re.compile(r"feed download failed (\S+): (\d{3})"),
      lambda m: f"A news feed could not be downloaded ({_site(m.group(1))}, error "
                f"{m.group(2)}). If this repeats, that site's stories are not being seen."),

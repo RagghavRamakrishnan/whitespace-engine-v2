@@ -194,15 +194,36 @@ def extract_body_deals(sig: RawSignal, max_per_article: int = 12) -> list[RawSig
     return out
 
 
+# Google News answered "too many requests" (429) this run. Asking again straight away
+# only makes it refuse for longer, so every further Google News request is skipped
+# until the next run. Stories missed are still there next run: the searches cover
+# the last 3 days. Reset in collect().
+_GN_PAUSED = {"on": False}
+
+
+class GooglePaused(Exception):
+    """Google News asked us to slow down; not asked again this run."""
+
+
+def _is_google(url: str) -> bool:
+    return "news.google." in (url or "")
+
+
 def _parse_feed(url: str):
     """Download a feed as a browser would, then parse it. feedparser's own downloader
     uses a robot name that many news sites block."""
     try:
         r = requests.get(url, headers=UA, timeout=TIMEOUT)
+        if _is_google(url) and getattr(r, "status_code", 200) == 429:
+            _GN_PAUSED["on"] = True
+            log.warning("feed download failed %s: 429 Too Many Requests", url)
+            raise GooglePaused("429")
         r.raise_for_status()
         feed = feedparser.parse(r.content)
         if feed.entries:
             return feed
+    except GooglePaused:
+        raise
     except Exception as exc:                                    # noqa: BLE001
         log.warning("feed download failed %s: %s", url, exc)
     return feedparser.parse(url)
@@ -213,7 +234,9 @@ _HOST_LAST: dict[str, float] = {}
 _HOST_GAP = 2.0          # seconds between requests to the same site
 # Google News only forwards to the publisher, and handles enormous traffic; a long
 # gap there just serialises every Google News download for no benefit.
-_HOST_GAP_OVERRIDE = {"news.google.com": 0.5}
+# Raised from 0.5 s after Google News started refusing requests ("too many requests").
+_HOST_GAP_OVERRIDE = {"news.google.com": 3.0}
+_GN_QUERY_GAP = 3.0      # seconds between the Google News searches themselves
 _AGE_CUTOFF: dict[str, Any] = {"at": None}
 
 
@@ -229,6 +252,9 @@ def _fetch(url: str) -> str:
     import time as _time
     from urllib.parse import urlparse
     host = urlparse(url).netloc
+    google = "news.google." in host
+    if google and _GN_PAUSED["on"]:
+        raise GooglePaused("Google News paused for this run after a 429")
     lock = _HOST_LOCKS.setdefault(host, threading.Lock())
     for attempt, pause in enumerate((0, 8, 20)):
         if pause:
@@ -240,6 +266,10 @@ def _fetch(url: str) -> str:
                 _time.sleep(gap)
             _HOST_LAST[host] = _time.monotonic()
         r = requests.get(url, headers=UA, timeout=TIMEOUT, allow_redirects=True)
+        if getattr(r, "status_code", 200) == 429 and google:
+            # Retrying Google straight away makes it refuse for longer: stop asking.
+            _GN_PAUSED["on"] = True
+            raise GooglePaused("429 Too Many Requests from Google News")
         if getattr(r, "status_code", 200) == 429 and attempt < 2:
             continue
         r.raise_for_status()
@@ -295,6 +325,9 @@ def _decode_google_news(url: str) -> str:
     if not m:
         return ""
     gid = m.group(1)
+    if _GN_PAUSED["on"]:
+        FETCH_STATS["gn_error"] = "skipped — Google News asked the engine to slow down"
+        return ""
     try:
         page = _fetch(f"https://news.google.com/rss/articles/{gid}")
         sg = re.search(r'data-n-a-sg="([^"]+)"', page)
@@ -309,6 +342,8 @@ def _decode_google_news(url: str) -> str:
                           headers={**UA, "content-type":
                                    "application/x-www-form-urlencoded;charset=UTF-8"},
                           data=payload, timeout=TIMEOUT)
+        if getattr(r, "status_code", 200) == 429:
+            _GN_PAUSED["on"] = True
         r.raise_for_status()
         rows = _json.loads(r.text.split("\n\n")[1])[:-2]
         real = _json.loads(rows[0][2])[1]
@@ -535,13 +570,23 @@ def ingest_google_news(source: dict[str, Any]) -> list[RawSignal]:
     days = int(source.get("max_age_days", 3))
     seen_links: set[str] = set()
     sigs: list[RawSignal] = []
-    for query in source.get("queries", []):
+    import time as _time
+    queries = list(source.get("queries", []))
+    for i, query in enumerate(queries):
+        if _GN_PAUSED["on"]:
+            log.warning("google news paused: %d of %d searches skipped this run",
+                        len(queries) - i, len(queries))
+            break
+        if i:
+            _time.sleep(_GN_QUERY_GAP)
         q = query if "when:" in query else f"{query} when:{days}d"
         url = ("https://news.google.com/rss/search?q=" + requests.utils.quote(q)
                + f"&hl={source.get('lang', 'en-IN')}&gl={source.get('country', 'IN')}"
                + f"&ceid={source.get('country', 'IN')}:{source.get('lang', 'en-IN')[:2]}")
         try:
             feed = _parse_feed(url)
+        except GooglePaused:
+            continue                    # reported once, by the "paused" line below
         except Exception as exc:                                # noqa: BLE001
             log.warning("google news query failed (%s): %s", query, exc)
             continue
@@ -631,6 +676,7 @@ def collect(cfg: dict[str, Any], store: Any = None) -> list[RawSignal]:
     _already_read = store.is_signal_seen if store is not None else None
     for k in FETCH_STATS:
         FETCH_STATS[k] = "" if k == "gn_error" else 0
+    _GN_PAUSED["on"] = False
     SOURCE_ERRORS.clear()
     _BROWSER["enabled"] = bool(cfg.get("run", {}).get("browser_expand", True))
     _BROWSER["max_pages"] = int(cfg.get("run", {}).get("browser_max_pages", 15))

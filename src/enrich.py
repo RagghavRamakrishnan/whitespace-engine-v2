@@ -208,6 +208,13 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
                 # "suppressed"). Drop them rather than spend a retry on it.
                 allowed = set(SCHEMA.get("properties", {}))
                 data = {k: v for k, v in data.items() if k in allowed}
+            if isinstance(data, dict):
+                # The model sometimes lists one founder too many. Keep the first ones
+                # rather than spend an extra AI request asking it again.
+                for k, spec in SCHEMA.get("properties", {}).items():
+                    mx = spec.get("maxItems") if isinstance(spec, dict) else None
+                    if mx is not None and isinstance(data.get(k), list) and len(data[k]) > mx:
+                        data[k] = data[k][:mx]
             errors = sorted(VALIDATOR.iter_errors(data), key=lambda e: e.path)
             if errors:
                 last_err = "; ".join(f"{'/'.join(map(str, e.path))}: {e.message}"
