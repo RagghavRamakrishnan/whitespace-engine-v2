@@ -130,6 +130,9 @@ def _same_company(a: str, b: str) -> bool:
         return False
     if a == b:
         return True
+    # "aiden ai" vs "aidenai": the same name written with or without a space.
+    if len(a) >= 5 and a.replace(" ", "") == b.replace(" ", ""):
+        return True
     short, long_ = sorted((a, b), key=len)
     return len(short) >= 4 and long_.startswith(short + " ")
 
@@ -230,6 +233,7 @@ def _process(cfg: dict[str, Any], dry_run: bool, report: RunReport) -> dict[str,
     stats["browser_missed"] = ingest.FETCH_STATS.get("browser_missed", 0)
     stats["gn_tried"] = ingest.FETCH_STATS["gn_tried"]
     stats["gn_decoded"] = ingest.FETCH_STATS["gn_decoded"]
+    stats["gn_throttled"] = ingest.FETCH_STATS.get("gn_throttled", 0)
     report.gn_error = ingest.FETCH_STATS["gn_error"]
 
     # A source silently returning nothing is the most likely way this degrades.

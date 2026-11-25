@@ -283,8 +283,11 @@ def enrich(sig: RawSignal, hc: HeadcountResult, detail: dict[str, Any],
             # India must be SHOWN, not assumed. A profile of an Indian-origin investor
             # once let a San Jose and a Paris company through as "India".
             verdict = _india_verdict(data, sig, detail or {})
-            if verdict == "foreign" and not unreadable:
-                return None, f"india_unknown: {hq}"
+            if verdict == "foreign":
+                # Based abroad with nothing tying it to India — even when the page
+                # could not be read ("London-based" Archer). Not rejected: it goes to
+                # the "India presence unknown — your call" list for the AE to judge.
+                return None, f"india_unknown: {hq or data.get('india_city') or ''}"
             link = str((detail or {}).get("india_link") or "")
             if verdict == "india" and link and not (data.get("india_evidence") or "").strip():
                 hq = data.get("hq_location") or "HQ abroad"
@@ -314,6 +317,17 @@ _INDIA_PLACE = re.compile(
     re.I)
 
 
+# Words that tie a company to India even without a city name.
+_INDIA_TIE = re.compile(
+    r"\b(iit|iits|iisc|iim|iiit|nit|bombay|madras|calcutta|private limited|pvt\.? ?ltd|"
+    r"crores?|lakhs?|rupees?|inr|rs\.?)\b|₹", re.I)
+_INDIA_CITY = re.compile(_INDIA_PLACE.pattern.replace("india|indian|", ""), re.I)
+
+
+def _ties_to_india(text: str) -> bool:
+    return bool(text) and bool(_INDIA_PLACE.search(text) or _INDIA_TIE.search(text))
+
+
 def _india_verdict(d: dict[str, Any], sig: RawSignal, detail: dict[str, Any]) -> str:
     """'india' | 'foreign' (based abroad, no India link) | 'none' (nothing either way)."""
     evidence = (d.get("india_evidence") or "").strip()
@@ -321,6 +335,24 @@ def _india_verdict(d: dict[str, Any], sig: RawSignal, detail: dict[str, Any]) ->
     gate_city = str(detail.get("city") or "")
     ai_city = str(d.get("india_city") or "")
     hq = str(d.get("hq_location") or "")
+    # Clearly based abroad (HQ or city names a non-Indian place, e.g. "Barcelona",
+    # "Long Beach", "Beirut")? Then the AI's "India evidence" must actually mention
+    # India — it has sometimes filled that field with words that never do.
+    city_l = ai_city.strip().lower()
+    foreign_city = bool(city_l) and city_l not in ("india", "unknown", "n/a", "none") \
+        and not city_l.startswith(("borderline", "location")) \
+        and not _INDIA_PLACE.search(ai_city)
+    foreign_hq = bool(hq.strip()) and not _INDIA_PLACE.search(hq)
+    if foreign_city and not _INDIA_CITY.search(hq):
+        foreign_hq = True           # "Brisbane, India": the city wins over a bare "India"
+    if foreign_hq:
+        if _INDIA_CITY.search(ai_city):
+            return "india"          # e.g. Delaware HQ, team in Bengaluru
+        if gate_city and gate_city != "Unknown" and _INDIA_PLACE.search(gate_city):
+            return "india"          # an Indian hub found in the article text itself
+        if _ties_to_india(evidence) or _ties_to_india(link):
+            return "india"
+        return "foreign"
     if evidence or link:
         return "india"
     if gate_city and gate_city not in ("Unknown",) and _INDIA_PLACE.search(gate_city):

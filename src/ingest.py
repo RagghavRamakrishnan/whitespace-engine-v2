@@ -326,6 +326,8 @@ def _decode_google_news(url: str) -> str:
         return ""
     gid = m.group(1)
     if _GN_PAUSED["on"]:
+        # Skipped on purpose, not broken: the browser opens it instead.
+        FETCH_STATS["gn_throttled"] += 1
         FETCH_STATS["gn_error"] = "skipped — Google News asked the engine to slow down"
         return ""
     try:
@@ -344,6 +346,7 @@ def _decode_google_news(url: str) -> str:
                           data=payload, timeout=TIMEOUT)
         if getattr(r, "status_code", 200) == 429:
             _GN_PAUSED["on"] = True
+            FETCH_STATS["gn_throttled"] += 1
         r.raise_for_status()
         rows = _json.loads(r.text.split("\n\n")[1])[:-2]
         real = _json.loads(rows[0][2])[1]
@@ -457,6 +460,7 @@ def _enrich_many(sigs: list[RawSignal], workers: int = 3) -> list[RawSignal]:
 # Counters for the email footer; reset at the start of each run by collect().
 FETCH_STATS = {"browser_opened": 0, "expanded": 0, "paywalled": 0,
                "gn_tried": 0, "gn_decoded": 0, "gn_error": "",
+               "gn_throttled": 0,   # links not converted only because Google said "slow down"
                "browser_missed": 0}     # pages that needed the browser; it was down
 SOURCE_ERRORS: dict[str, str] = {}      # source id -> why it failed this run
 _BROWSER = {"enabled": True, "max_pages": 15, "used": 0, "deadline": None}
@@ -572,6 +576,12 @@ def ingest_google_news(source: dict[str, Any]) -> list[RawSignal]:
     sigs: list[RawSignal] = []
     import time as _time
     queries = list(source.get("queries", []))
+    if queries:
+        # Start from a different search each run (it moves on every 15 minutes), so
+        # when Google News asks the engine to slow down part-way through, it is not
+        # always the same searches at the back of the queue that wait for a later run.
+        start = int(_time.time() // 900) % len(queries)
+        queries = queries[start:] + queries[:start]
     for i, query in enumerate(queries):
         if _GN_PAUSED["on"]:
             log.warning("google news paused: %d of %d searches skipped this run",

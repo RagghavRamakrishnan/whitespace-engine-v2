@@ -213,9 +213,13 @@ class Store:
                       OR (COALESCE(normalized_name,'') <> '' AND normalized_name = ?)
                       OR (length(?) >= 4 AND length(COALESCE(normalized_name,'')) >= 4
                           AND (normalized_name LIKE ? OR ? LIKE normalized_name || ' %'))
+                      OR (length(?) >= 5
+                          AND REPLACE(COALESCE(normalized_name,''), ' ', '') = ?)
                    LIMIT 1""",
                 (domain or "\x00", slug or "\x00", name or "\x00",
-                 name or "", (name or "\x00") + " %", name or "\x00"),
+                 name or "", (name or "\x00") + " %", name or "\x00",
+                 # Same name with or without spaces ("Aiden AI" vs "AidenAI").
+                 (name or "").replace(" ", ""), (name or "\x00").replace(" ", "")),
             ).fetchone()
 
     def dedup_check(self, domain: str, slug: str,

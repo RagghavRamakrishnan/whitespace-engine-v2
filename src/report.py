@@ -262,6 +262,16 @@ def _checks(rep: RunReport, stats: dict[str, Any],
 
     # 2b. Google News links turned into the real article link?
     tried, ok = stats.get("gn_tried", 0), stats.get("gn_decoded", 0)
+    # Links left unconverted only because Google News asked the engine to slow down
+    # are not a fault (the browser opens them, and the "slow down" line already says
+    # so). Judge the link-conversion step only on the links it actually attempted.
+    throttled = min(stats.get("gn_throttled", 0), max(tried - ok, 0))
+    tried -= throttled
+    if throttled:
+        out.append((INFO, f"{throttled} Google News link{'s were' if throttled > 1 else ' was'} "
+                          f"left for the browser because Google News asked the engine to "
+                          f"slow down",
+                    "Not a fault — the browser opens these instead. Nothing to do."))
     if tried:
         if ok == tried:
             out.append((OK, f"Google News links: all {tried} opened as the real article", ""))
